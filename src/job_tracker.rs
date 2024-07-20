@@ -1,6 +1,6 @@
 use std::{fmt::Display, usize};
 
-type Timestamp = i64;
+use crate::{Timestamp, TimeDelta};
 
 #[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
 struct Bucket {
@@ -10,7 +10,7 @@ struct Bucket {
     lost_here: usize,
     /// The cumulative time in seconds it took for all jobs to reach this
     /// milestone. The average time per job is this field divided by `achieved`.
-    total_time: i64,
+    total_time: TimeDelta,
 }
 
 /// Each row corresponds to one possible kind of job, and tracks data for that
@@ -30,7 +30,8 @@ impl<const M: usize, const N: usize> JobTracker<M, N> {
     /// Adds a job of the specified kind to the tracker. The timestamps
     /// represent when the job reached each milestone. If the timestamp for
     /// reaching a certain milestone is None, then it is equivalent to the
-    /// earliest possible in-order time. A timestamp must be None for a
+    /// earliest possible in-order time, unless there are no known timestamps
+    /// ahead, in which case it is the latest. A timestamp must be None for a
     /// milestone that does not apply to the specific job kind. The length of
     /// the timestamps slice represents the number of milestones achieved by the
     /// job; it must not exceed the total number of job milestones (i.e. N), and
@@ -56,9 +57,9 @@ impl<const M: usize, const N: usize> JobTracker<M, N> {
                 let time_till_this_milestone = if let Some(latest_timestamp) = latest_timestamp {
                     timestamp - latest_timestamp
                 } else {
-                    Timestamp::MAX
+                    TimeDelta::zero()
                 };
-                bucket.total_time = bucket.total_time.saturating_add(time_till_this_milestone);
+                bucket.total_time = bucket.total_time + time_till_this_milestone;
                 latest_timestamp = Some(timestamp);
             }
         }
@@ -89,8 +90,8 @@ impl<const M: usize, const N: usize> JobTracker<M, N> {
             let lost = origin_bucket.lost_here;
             let (moved_on, moveon_time) = self
                 .bucket_after(kind, milestone)
-                .map(|b| (b.achieved, b.total_time as f64))
-                .unwrap_or((0, 0.0));
+                .map(|b| (b.achieved, b.total_time))
+                .unwrap_or((0, TimeDelta::zero()));
 
             (moved_on, lost, total, moveon_time)
         } else {
@@ -104,9 +105,9 @@ impl<const M: usize, const N: usize> JobTracker<M, N> {
             let (moved_on, moveon_time) = buckets
                 .iter()
                 .filter_map(|&(kind, _)| {
-                    self.bucket_after(kind, milestone).map(|b| (b.achieved, b.total_time as f64))
+                    self.bucket_after(kind, milestone).map(|b| (b.achieved, b.total_time))
                 })
-                .fold((0, 0.0), |(acc_moved_on, acc_time), (moved_on, time)| {
+                .fold((0, TimeDelta::zero()), |(acc_moved_on, acc_time), (moved_on, time)| {
                     (acc_moved_on + moved_on, acc_time + time)
                 });
 
@@ -122,9 +123,9 @@ impl<const M: usize, const N: usize> JobTracker<M, N> {
                 moved_on as f64 / non_pending as f64
             },
             average_time_to_move_on: if moved_on == 0 {
-                0.0
+                TimeDelta::zero()
             } else {
-                moveon_time / moved_on as f64
+                moveon_time / moved_on.try_into().unwrap()
             },
         }
     }
@@ -135,7 +136,7 @@ pub struct GetStatsResult {
     pub total: usize,
     pub non_pending: usize,
     pub conversion_rate: f64,
-    pub average_time_to_move_on: f64, // in seconds
+    pub average_time_to_move_on: TimeDelta,
 }
 
 impl<const M: usize, const N: usize> Display for JobTracker<M, N> {
@@ -164,28 +165,29 @@ mod test {
 
     #[test]
     fn get_stats() {
+        let time_unit = TimeDelta::days(10);
         let tracker = JobTracker {
             buckets: [
                 [
-                    Some(Bucket { achieved: 80, lost_here: 1, total_time: 1000 }),
-                    Some(Bucket { achieved: 70, lost_here: 1, total_time: 1000 }),
-                    Some(Bucket { achieved: 60, lost_here: 1, total_time: 1000 }),
-                    Some(Bucket { achieved: 50, lost_here: 1, total_time: 1000 }),
-                    Some(Bucket { achieved: 40, lost_here: 1, total_time: 1000 }),
+                    Some(Bucket { achieved: 80, lost_here: 1, total_time: time_unit }),
+                    Some(Bucket { achieved: 70, lost_here: 1, total_time: time_unit }),
+                    Some(Bucket { achieved: 60, lost_here: 1, total_time: time_unit }),
+                    Some(Bucket { achieved: 50, lost_here: 1, total_time: time_unit }),
+                    Some(Bucket { achieved: 40, lost_here: 1, total_time: time_unit }),
                 ],
                 [
-                    Some(Bucket { achieved: 40, lost_here: 1, total_time: 1000 }),
-                    Some(Bucket { achieved: 35, lost_here: 1, total_time: 1000 }),
+                    Some(Bucket { achieved: 40, lost_here: 1, total_time: time_unit }),
+                    Some(Bucket { achieved: 35, lost_here: 1, total_time: time_unit }),
                     None,
-                    Some(Bucket { achieved: 25, lost_here: 1, total_time: 1000 }),
-                    Some(Bucket { achieved: 20, lost_here: 1, total_time: 1000 }),
+                    Some(Bucket { achieved: 25, lost_here: 1, total_time: time_unit }),
+                    Some(Bucket { achieved: 20, lost_here: 1, total_time: time_unit }),
                 ],
                 [
-                    Some(Bucket { achieved: 20, lost_here: 1, total_time: 1000 }),
-                    Some(Bucket { achieved: 17, lost_here: 1, total_time: 1000 }),
+                    Some(Bucket { achieved: 20, lost_here: 1, total_time: time_unit }),
+                    Some(Bucket { achieved: 17, lost_here: 1, total_time: time_unit }),
                     None,
-                    Some(Bucket { achieved: 12, lost_here: 1, total_time: 1000 }),
-                    Some(Bucket { achieved: 10, lost_here: 1, total_time: 1000 }),
+                    Some(Bucket { achieved: 12, lost_here: 1, total_time: time_unit }),
+                    Some(Bucket { achieved: 10, lost_here: 1, total_time: time_unit }),
                 ],
             ],
         };
@@ -196,7 +198,7 @@ mod test {
                 total: 80 + 40 + 20,
                 non_pending: 71 + 36 + 18,
                 conversion_rate: (70 + 35 + 17) as f64 / (71 + 36 + 18) as f64,
-                average_time_to_move_on: (1000 + 1000 + 1000) as f64 / (70 + 35 + 17) as f64,
+                average_time_to_move_on: time_unit * 3 / (70 + 35 + 17),
             }
         );
         assert_eq!(
@@ -205,7 +207,7 @@ mod test {
                 total: 70,
                 non_pending: 61,
                 conversion_rate: 60.0 / 61.0,
-                average_time_to_move_on: 1000.0 / 60.0,
+                average_time_to_move_on: time_unit / 60,
             }
         );
         assert_eq!(
@@ -214,7 +216,7 @@ mod test {
                 total: 35,
                 non_pending: 26,
                 conversion_rate: 25.0 / 26.0,
-                average_time_to_move_on: 1000.0 / 25.0,
+                average_time_to_move_on: time_unit / 25,
             }
         );
         assert_eq!(
@@ -223,7 +225,7 @@ mod test {
                 total: 17,
                 non_pending: 13,
                 conversion_rate: 12.0 / 13.0,
-                average_time_to_move_on: 1000.0 / 12.0,
+                average_time_to_move_on: time_unit / 12,
             }
         );
         assert_eq!(
@@ -232,40 +234,49 @@ mod test {
                 total: 60,
                 non_pending: 51,
                 conversion_rate: 50.0 / 51.0,
-                average_time_to_move_on: 1000.0 / 50.0,
+                average_time_to_move_on: time_unit / 50,
             }
         )
     }
 
     #[test]
     fn add_jobs() {
+        // date-time
+        fn dt(seconds: i64) -> Timestamp {
+            Timestamp::from_timestamp(seconds, 0).unwrap()
+        }
+        // time-delta
+        fn td(seconds: i64) -> TimeDelta {
+            TimeDelta::seconds(seconds)
+        }
+
         let mut tracker = JobTracker::new([
             [true, true, true, true, true],
             [true, true, false, true, true],
             [true, true, false, true, true],
         ]);
 
-        tracker.add_job(0, &[None, Some(1), Some(2), Some(4), Some(8)], false);
+        tracker.add_job(0, &[None, Some(dt(1)), Some(dt(2)), Some(dt(4)), Some(dt(8))], false);
         assert_eq!(
             tracker.buckets[0],
             [
-                Some(Bucket { achieved: 1, lost_here: 0, total_time: 0 }),
-                Some(Bucket { achieved: 1, lost_here: 0, total_time: i64::MAX }),
-                Some(Bucket { achieved: 1, lost_here: 0, total_time: 1 }),
-                Some(Bucket { achieved: 1, lost_here: 0, total_time: 2 }),
-                Some(Bucket { achieved: 1, lost_here: 0, total_time: 4 }),
+                Some(Bucket { achieved: 1, lost_here: 0, total_time: td(0) }),
+                Some(Bucket { achieved: 1, lost_here: 0, total_time: td(0) }),
+                Some(Bucket { achieved: 1, lost_here: 0, total_time: td(1) }),
+                Some(Bucket { achieved: 1, lost_here: 0, total_time: td(2) }),
+                Some(Bucket { achieved: 1, lost_here: 0, total_time: td(4) }),
             ]
         );
 
-        tracker.add_job(0, &[None, Some(2), None, Some(10)], true);
+        tracker.add_job(0, &[None, Some(dt(2)), None, Some(dt(10))], true);
         assert_eq!(
             tracker.buckets[0],
             [
-                Some(Bucket { achieved: 2, lost_here: 0, total_time: 0 }),
-                Some(Bucket { achieved: 2, lost_here: 0, total_time: i64::MAX }),
-                Some(Bucket { achieved: 2, lost_here: 0, total_time: 1 }),
-                Some(Bucket { achieved: 2, lost_here: 1, total_time: 10 }),
-                Some(Bucket { achieved: 1, lost_here: 0, total_time: 4 }),
+                Some(Bucket { achieved: 2, lost_here: 0, total_time: td(0) }),
+                Some(Bucket { achieved: 2, lost_here: 0, total_time: td(0) }),
+                Some(Bucket { achieved: 2, lost_here: 0, total_time: td(1) }),
+                Some(Bucket { achieved: 2, lost_here: 1, total_time: td(10) }),
+                Some(Bucket { achieved: 1, lost_here: 0, total_time: td(4) }),
             ]
         );
     }

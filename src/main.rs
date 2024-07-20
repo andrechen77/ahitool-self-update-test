@@ -1,6 +1,7 @@
 use std::{collections::HashMap, fmt::Display, ops::Index};
 
 use anyhow::{bail, Result};
+use chrono::{DateTime, Utc};
 use job_tracker::{GetStatsResult, JobTracker};
 use reqwest::{self, header::CONTENT_TYPE};
 use serde::Deserialize;
@@ -133,13 +134,14 @@ fn build_job_tracker() -> JobTracker3x5 {
 
 fn print_job_tracker_results(tracker: &JobTracker3x5) {
     fn print_single_conversion(get_stats_result: job_tracker::GetStatsResult) {
+        const SECONDS_IN_DAY: f64 = 86400.0;
+
         let GetStatsResult { total, non_pending, conversion_rate, average_time_to_move_on } =
             get_stats_result;
 
-        let average_time_to_move_on_days = average_time_to_move_on as f64 / 86400.0;
         println!(
             "{:3} {:3} {:.2} {:.2}",
-            total, non_pending, conversion_rate, average_time_to_move_on_days
+            total, non_pending, conversion_rate, average_time_to_move_on.num_seconds() as f64 / SECONDS_IN_DAY
         );
     }
 
@@ -166,7 +168,8 @@ fn print_job_tracker_results(tracker: &JobTracker3x5) {
     print_single_conversion(tracker.get_stats(Milestone::ContractSigned.into_int(), None));
 }
 
-type Timestamp = i64;
+type Timestamp = DateTime<Utc>;
+type TimeDelta = chrono::TimeDelta;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Milestone {
@@ -223,10 +226,10 @@ struct MilestoneDates {
     loss_date: Option<Timestamp>,
 }
 impl Index<Milestone> for MilestoneDates {
-    type Output = Option<i64>;
+    type Output = Option<Timestamp>;
 
     fn index(&self, stage: Milestone) -> &Self::Output {
-        static NONE: Option<i64> = None;
+        static NONE: Option<Timestamp> = None;
 
         match stage {
             Milestone::LeadAcquired => &NONE,
@@ -406,16 +409,16 @@ impl TryFrom<serde_json::Value> for Job {
         // the JobNimbus API sometimes returns a 0 timestamp for a date that has
         // no value, so we want to filter those out as if the value did not
         // exist
-        fn get_nonzero(map: &serde_json::Map<String, serde_json::Value>, key: &str) -> Option<i64> {
-            map.get(key).and_then(|value| value.as_i64()).filter(|&val| val != 0)
+        fn get_timestamp_nonzero(map: &serde_json::Map<String, serde_json::Value>, key: &str) -> Option<Timestamp> {
+            map.get(key).and_then(|value| value.as_i64()).filter(|&val| val != 0).and_then(|secs| DateTime::<Utc>::from_timestamp(secs, 0))
         }
 
         // extract all the milestone dates
-        let appointment_date = get_nonzero(&map, KEY_APPOINTMENT_DATE);
-        let contingency_date = get_nonzero(&map, KEY_CONTINGENCY_DATE);
-        let contract_date = get_nonzero(&map, KEY_CONTRACT_DATE);
-        let install_date = get_nonzero(&map, KEY_INSTALL_DATE);
-        let loss_date = get_nonzero(&map, KEY_LOSS_DATE);
+        let appointment_date = get_timestamp_nonzero(&map, KEY_APPOINTMENT_DATE);
+        let contingency_date = get_timestamp_nonzero(&map, KEY_CONTINGENCY_DATE);
+        let contract_date = get_timestamp_nonzero(&map, KEY_CONTRACT_DATE);
+        let install_date = get_timestamp_nonzero(&map, KEY_INSTALL_DATE);
+        let loss_date = get_timestamp_nonzero(&map, KEY_LOSS_DATE);
 
         Ok(Job {
             jnid,
@@ -440,13 +443,18 @@ mod test {
 
     use super::*;
 
+    // date-time
+    fn dt(seconds: i64) -> Timestamp {
+        Timestamp::from_timestamp(seconds, 0).unwrap()
+    }
+
     fn make_job(
         insurance: bool,
-        date_1: Option<i64>,
-        date_2: Option<i64>,
-        date_3: Option<i64>,
-        date_4: Option<i64>,
-        date_5: Option<i64>,
+        date_1: Option<Timestamp>,
+        date_2: Option<Timestamp>,
+        date_3: Option<Timestamp>,
+        date_4: Option<Timestamp>,
+        date_5: Option<Timestamp>,
     ) -> Job {
         Job {
             jnid: "0".to_owned(),
@@ -466,13 +474,13 @@ mod test {
 
     #[test]
     fn job_status_retail_without_contingency() {
-        let job = make_job(false, Some(1), None, Some(3), Some(4), None);
+        let job = make_job(false, Some(dt(1)), None, Some(dt(3)), Some(dt(4)), None);
         assert_eq!(
             job.clone().into_analyzed(),
             Ok(AnalyzedJob {
                 job,
                 kind: JobKind::Retail,
-                timestamps: vec![None, Some(1), None, Some(3), Some(4)],
+                timestamps: vec![None, Some(dt(1)), None, Some(dt(3)), Some(dt(4))],
                 settled: true,
             })
         );
@@ -480,7 +488,7 @@ mod test {
 
     #[test]
     fn job_status_retail_with_contingency() {
-        let job = make_job(false, Some(1), Some(2), Some(3), Some(4), None);
+        let job = make_job(false, Some(dt(1)), Some(dt(2)), Some(dt(3)), Some(dt(4)), None);
         assert_eq!(
             job.clone().into_analyzed(),
             Err((job, JobAnalysisError::ContingencyWithoutInsurance))
@@ -489,13 +497,13 @@ mod test {
 
     #[test]
     fn job_status_insurance_without_contingency() {
-        let job = make_job(true, Some(1), None, Some(3), Some(4), None);
+        let job = make_job(true, Some(dt(1)), None, Some(dt(3)), Some(dt(4)), None);
         assert_eq!(
             job.clone().into_analyzed(),
             Ok(AnalyzedJob {
                 job,
                 kind: JobKind::InsuranceWithoutContingency,
-                timestamps: vec![None, Some(1), None, Some(3), Some(4)],
+                timestamps: vec![None, Some(dt(1)), None, Some(dt(3)), Some(dt(4))],
                 settled: true,
             })
         );
@@ -503,13 +511,13 @@ mod test {
 
     #[test]
     fn job_status_insurance_with_contingency() {
-        let job = make_job(true, Some(1), Some(2), Some(3), Some(4), None);
+        let job = make_job(true, Some(dt(1)), Some(dt(2)), Some(dt(3)), Some(dt(4)), None);
         assert_eq!(
             job.clone().into_analyzed(),
             Ok(AnalyzedJob {
                 job,
                 kind: JobKind::InsuranceWithContingency,
-                timestamps: vec![None, Some(1), Some(2), Some(3), Some(4)],
+                timestamps: vec![None, Some(dt(1)), Some(dt(2)), Some(dt(3)), Some(dt(4))],
                 settled: true,
             })
         );
@@ -521,65 +529,65 @@ mod test {
         assert_eq!(
             job.clone().into_analyzed(),
             Ok(AnalyzedJob {
-                job,
-                kind: JobKind::InsuranceWithContingency,
-                timestamps: vec![None],
-                settled: false,
+            job,
+            kind: JobKind::InsuranceWithContingency,
+            timestamps: vec![None],
+            settled: false,
             })
         );
 
-        let job = make_job(true, Some(1), None, None, None, None);
+        let job = make_job(true, Some(dt(1)), None, None, None, None);
         assert_eq!(
             job.clone().into_analyzed(),
             Ok(AnalyzedJob {
-                job,
-                kind: JobKind::InsuranceWithContingency,
-                timestamps: vec![None, Some(1)],
-                settled: false,
+            job,
+            kind: JobKind::InsuranceWithContingency,
+            timestamps: vec![None, Some(dt(1))],
+            settled: false,
             })
         );
 
-        let job = make_job(true, Some(1), Some(2), None, None, None);
+        let job = make_job(true, Some(dt(1)), Some(dt(2)), None, None, None);
         assert_eq!(
             job.clone().into_analyzed(),
             Ok(AnalyzedJob {
-                job,
-                kind: JobKind::InsuranceWithContingency,
-                timestamps: vec![None, Some(1), Some(2)],
-                settled: false,
+            job,
+            kind: JobKind::InsuranceWithContingency,
+            timestamps: vec![None, Some(dt(1)), Some(dt(2))],
+            settled: false,
             })
         );
 
-        let job = make_job(true, Some(1), Some(2), Some(3), None, None);
+        let job = make_job(true, Some(dt(1)), Some(dt(2)), Some(dt(3)), None, None);
         assert_eq!(
             job.clone().into_analyzed(),
             Ok(AnalyzedJob {
-                job,
-                kind: JobKind::InsuranceWithContingency,
-                timestamps: vec![None, Some(1), Some(2), Some(3)],
-                settled: false,
+            job,
+            kind: JobKind::InsuranceWithContingency,
+            timestamps: vec![None, Some(dt(1)), Some(dt(2)), Some(dt(3))],
+            settled: false,
             })
         );
 
-        let job = make_job(true, Some(1), Some(2), Some(3), Some(4), None);
+        let job = make_job(true, Some(dt(1)), Some(dt(2)), Some(dt(3)), Some(dt(4)), None);
         assert_eq!(
             job.clone().into_analyzed(),
             Ok(AnalyzedJob {
-                job,
-                kind: JobKind::InsuranceWithContingency,
-                timestamps: vec![None, Some(1), Some(2), Some(3), Some(4)],
-                settled: true,
+            job,
+            kind: JobKind::InsuranceWithContingency,
+            timestamps: vec![None, Some(dt(1)), Some(dt(2)), Some(dt(3)), Some(dt(4))],
+            settled: true,
             })
         );
 
-        let job = make_job(true, Some(1), None, None, None, Some(5));
+        let job = make_job(true, Some(dt(1)), None, None, None, Some(dt(5)));
         assert_eq!(
             job.clone().into_analyzed(),
             Ok(AnalyzedJob {
-                job,
-                kind: JobKind::InsuranceWithContingency,
-                timestamps: vec![None, Some(1)],
-                settled: true,
+            job,
+            kind: JobKind::InsuranceWithContingency,
+            timestamps: vec![None, Some(dt(1))],
+            settled: true,
             })
         );
     }
