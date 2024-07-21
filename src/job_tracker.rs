@@ -146,6 +146,37 @@ impl<const M: usize, const N: usize> JobTracker<M, N> {
 
         CalcStatsResult { num_total, conversion_rate, average_time_to_achieve }
     }
+
+    /// Considering all jobs, calculates the total number of losses and the
+    /// average time it took to lose the job (counting from the last achieved
+    /// milestone until the time of loss). The average time is zero if there
+    /// were no losses.
+    pub fn calc_stats_of_loss(&self) -> (usize, TimeDelta) {
+        let mut total_num_lost = 0;
+        let mut total_loss_time = TimeDelta::zero();
+        for row in self.buckets.iter() {
+            let mut last_achieved = None;
+            // skip 1 because we don't want to count leads that don't turn
+            // into appointments as lost jobs
+            for bucket in row.iter().skip(1).filter_map(|b| b.as_ref()) {
+                if let Some(last_achieved) = last_achieved {
+                    // we are not in the first iteration of the loop
+
+                    // calculate the number lost when moving to this milestone
+                    let num_lost = last_achieved - bucket.achieved;
+                    total_num_lost += num_lost;
+                    total_loss_time += bucket.cum_loss_time;
+                }
+                last_achieved = Some(bucket.achieved);
+            }
+        }
+        let average_loss_time = if total_num_lost == 0 {
+            TimeDelta::zero()
+        } else {
+            total_loss_time / total_num_lost.try_into().unwrap()
+        };
+        (total_num_lost, average_loss_time)
+    }
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -160,9 +191,9 @@ impl<const M: usize, const N: usize> Display for JobTracker<M, N> {
         for row in self.buckets.iter() {
             for bucket in row.iter() {
                 if let Some(bucket) = bucket {
-                    write!(f, "({:3} {:5})", bucket.achieved, bucket.cum_achieve_time)?;
+                    write!(f, "({:3} {:5} {:5})", bucket.achieved, bucket.cum_achieve_time, bucket.cum_loss_time)?;
                 } else {
-                    write!(f, "(--- -----)")?;
+                    write!(f, "(--- ----- -----)")?;
                 }
             }
             writeln!(f)?;
@@ -176,7 +207,7 @@ mod test {
     use super::*;
 
     #[test]
-    fn get_stats() {
+    fn calc_stats() {
         let tu = TimeDelta::days(10);
         let tracker = JobTracker {
             buckets: [
@@ -244,6 +275,38 @@ mod test {
                 average_time_to_achieve: tu / 12,
             }
         );
+    }
+
+    #[test]
+    fn calc_stats_of_loss() {
+        let tu = TimeDelta::days(10);
+        let tracker = JobTracker {
+            buckets: [
+                [
+                    Some(Bucket { achieved: 80, cum_achieve_time: tu, cum_loss_time: tu }),
+                    Some(Bucket { achieved: 70, cum_achieve_time: tu, cum_loss_time: tu }),
+                    Some(Bucket { achieved: 60, cum_achieve_time: tu, cum_loss_time: tu }),
+                    Some(Bucket { achieved: 50, cum_achieve_time: tu, cum_loss_time: tu }),
+                    Some(Bucket { achieved: 40, cum_achieve_time: tu, cum_loss_time: tu }),
+                ],
+                [
+                    Some(Bucket { achieved: 40, cum_achieve_time: tu, cum_loss_time: tu }),
+                    Some(Bucket { achieved: 35, cum_achieve_time: tu, cum_loss_time: tu }),
+                    None,
+                    Some(Bucket { achieved: 25, cum_achieve_time: tu, cum_loss_time: tu }),
+                    Some(Bucket { achieved: 20, cum_achieve_time: tu, cum_loss_time: tu }),
+                ],
+                [
+                    Some(Bucket { achieved: 20, cum_achieve_time: tu, cum_loss_time: tu }),
+                    Some(Bucket { achieved: 17, cum_achieve_time: tu, cum_loss_time: tu }),
+                    None,
+                    Some(Bucket { achieved: 12, cum_achieve_time: tu, cum_loss_time: tu }),
+                    Some(Bucket { achieved: 10, cum_achieve_time: tu, cum_loss_time: tu }),
+                ],
+            ],
+        };
+
+        assert_eq!(tracker.calc_stats_of_loss(), (70, (tu * 10) / 70));
     }
 
     #[test]
