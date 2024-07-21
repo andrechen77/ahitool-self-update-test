@@ -2,7 +2,7 @@ use std::{collections::HashMap, fmt::Display, ops::Index};
 
 use anyhow::{bail, Result};
 use chrono::{DateTime, Utc};
-use job_tracker::{GetStatsResult, JobTracker};
+use job_tracker::{CalcStatsResult, JobTracker};
 use reqwest::{self, header::CONTENT_TYPE};
 use serde::Deserialize;
 use thiserror::Error;
@@ -107,11 +107,11 @@ fn process_jobs(jobs: impl Iterator<Item = Job>) -> ProcessJobsResult {
         match job.into_analyzed() {
             Ok(analyzed) => {
                 let kind = analyzed.kind.into_int();
-                global_tracker.add_job(kind, &analyzed.timestamps, analyzed.settled);
+                global_tracker.add_job(kind, &analyzed.timestamps, analyzed.loss_timestamp);
                 rep_specific_trackers
                     .entry(analyzed.job.sales_rep.clone())
                     .or_insert_with(build_job_tracker)
-                    .add_job(kind, &analyzed.timestamps, analyzed.settled);
+                    .add_job(kind, &analyzed.timestamps, analyzed.loss_timestamp);
             }
             Err((job, err)) => {
                 invalid_jobs.entry(job.sales_rep.clone()).or_insert_with(Vec::new).push((job, err));
@@ -133,39 +133,7 @@ fn build_job_tracker() -> JobTracker3x5 {
 }
 
 fn print_job_tracker_results(tracker: &JobTracker3x5) {
-    fn print_single_conversion(get_stats_result: job_tracker::GetStatsResult) {
-        const SECONDS_IN_DAY: f64 = 86400.0;
-
-        let GetStatsResult { total, non_pending, conversion_rate, average_time_to_move_on } =
-            get_stats_result;
-
-        println!(
-            "{:3} {:3} {:.2} {:.2}",
-            total, non_pending, conversion_rate, average_time_to_move_on.num_seconds() as f64 / SECONDS_IN_DAY
-        );
-    }
-
-    println!("From appt to contingency (insurance)");
-    print_single_conversion(tracker.get_stats(
-        Milestone::AppointmentMade.into_int(),
-        Some(JobKind::InsuranceWithContingency.into_int()),
-    ));
-    println!("From contingency to contract (insurance)");
-    print_single_conversion(tracker.get_stats(
-        Milestone::ContingencySigned.into_int(),
-        Some(JobKind::InsuranceWithContingency.into_int()),
-    ));
-    println!("From appt to contract (insurance)");
-    print_single_conversion(tracker.get_stats(
-        Milestone::AppointmentMade.into_int(),
-        Some(JobKind::InsuranceWithoutContingency.into_int()),
-    ));
-    println!("From appt to contract (retail");
-    print_single_conversion(
-        tracker.get_stats(Milestone::AppointmentMade.into_int(), Some(JobKind::Retail.into_int())),
-    );
-    println!("From contract to install (all)");
-    print_single_conversion(tracker.get_stats(Milestone::ContractSigned.into_int(), None));
+    todo!()
 }
 
 type Timestamp = DateTime<Utc>;
@@ -268,9 +236,14 @@ struct AnalyzedJob {
     /// only the first milestone was reached), and None indicates the earliest
     /// possible time which is still in order.
     timestamps: Vec<Option<Timestamp>>,
-    /// Whether the job is settled (i.e. "black", i.e. either lost or at the
-    /// last milestone).
-    settled: bool,
+    /// The date at which the job was lost.
+    loss_timestamp: Option<Timestamp>,
+}
+
+impl AnalyzedJob {
+    fn is_settled(&self) -> bool {
+        self.loss_timestamp.is_some() || self.timestamps.len() == Milestone::num_variants()
+    }
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -361,22 +334,19 @@ impl Job {
                 }
             }
         }
-        let settled = if let Some(loss_date) = self.milestone_dates.loss_date {
+        if let Some(loss_date) = &self.milestone_dates.loss_date {
             // ensure that the loss date comes after all other dates
-            if let Some(previous_date) = previous_date {
+            if let Some(previous_date) = &previous_date {
                 if loss_date <= previous_date {
                     return Err((self, JobAnalysisError::OutOfOrderDates(None)));
                 }
             }
-            true
-        } else {
-            current_milestone == Milestone::Installed
         };
 
         Ok(AnalyzedJob {
-            timestamps: self.milestone_dates.timestamps_up_to(current_milestone),
             kind,
-            settled,
+            timestamps: self.milestone_dates.timestamps_up_to(current_milestone),
+            loss_timestamp: self.milestone_dates.loss_date.clone(),
             job: self,
         })
     }
@@ -409,8 +379,14 @@ impl TryFrom<serde_json::Value> for Job {
         // the JobNimbus API sometimes returns a 0 timestamp for a date that has
         // no value, so we want to filter those out as if the value did not
         // exist
-        fn get_timestamp_nonzero(map: &serde_json::Map<String, serde_json::Value>, key: &str) -> Option<Timestamp> {
-            map.get(key).and_then(|value| value.as_i64()).filter(|&val| val != 0).and_then(|secs| DateTime::<Utc>::from_timestamp(secs, 0))
+        fn get_timestamp_nonzero(
+            map: &serde_json::Map<String, serde_json::Value>,
+            key: &str,
+        ) -> Option<Timestamp> {
+            map.get(key)
+                .and_then(|value| value.as_i64())
+                .filter(|&val| val != 0)
+                .and_then(|secs| DateTime::<Utc>::from_timestamp(secs, 0))
         }
 
         // extract all the milestone dates
@@ -481,7 +457,7 @@ mod test {
                 job,
                 kind: JobKind::Retail,
                 timestamps: vec![None, Some(dt(1)), None, Some(dt(3)), Some(dt(4))],
-                settled: true,
+                loss_timestamp: None,
             })
         );
     }
@@ -504,7 +480,7 @@ mod test {
                 job,
                 kind: JobKind::InsuranceWithoutContingency,
                 timestamps: vec![None, Some(dt(1)), None, Some(dt(3)), Some(dt(4))],
-                settled: true,
+                loss_timestamp: None,
             })
         );
     }
@@ -518,7 +494,7 @@ mod test {
                 job,
                 kind: JobKind::InsuranceWithContingency,
                 timestamps: vec![None, Some(dt(1)), Some(dt(2)), Some(dt(3)), Some(dt(4))],
-                settled: true,
+                loss_timestamp: None,
             })
         );
     }
@@ -529,10 +505,10 @@ mod test {
         assert_eq!(
             job.clone().into_analyzed(),
             Ok(AnalyzedJob {
-            job,
-            kind: JobKind::InsuranceWithContingency,
-            timestamps: vec![None],
-            settled: false,
+                job,
+                kind: JobKind::InsuranceWithContingency,
+                timestamps: vec![None],
+                loss_timestamp: None,
             })
         );
 
@@ -540,10 +516,10 @@ mod test {
         assert_eq!(
             job.clone().into_analyzed(),
             Ok(AnalyzedJob {
-            job,
-            kind: JobKind::InsuranceWithContingency,
-            timestamps: vec![None, Some(dt(1))],
-            settled: false,
+                job,
+                kind: JobKind::InsuranceWithContingency,
+                timestamps: vec![None, Some(dt(1))],
+                loss_timestamp: None,
             })
         );
 
@@ -551,10 +527,10 @@ mod test {
         assert_eq!(
             job.clone().into_analyzed(),
             Ok(AnalyzedJob {
-            job,
-            kind: JobKind::InsuranceWithContingency,
-            timestamps: vec![None, Some(dt(1)), Some(dt(2))],
-            settled: false,
+                job,
+                kind: JobKind::InsuranceWithContingency,
+                timestamps: vec![None, Some(dt(1)), Some(dt(2))],
+                loss_timestamp: None,
             })
         );
 
@@ -562,10 +538,10 @@ mod test {
         assert_eq!(
             job.clone().into_analyzed(),
             Ok(AnalyzedJob {
-            job,
-            kind: JobKind::InsuranceWithContingency,
-            timestamps: vec![None, Some(dt(1)), Some(dt(2)), Some(dt(3))],
-            settled: false,
+                job,
+                kind: JobKind::InsuranceWithContingency,
+                timestamps: vec![None, Some(dt(1)), Some(dt(2)), Some(dt(3))],
+                loss_timestamp: None,
             })
         );
 
@@ -573,10 +549,10 @@ mod test {
         assert_eq!(
             job.clone().into_analyzed(),
             Ok(AnalyzedJob {
-            job,
-            kind: JobKind::InsuranceWithContingency,
-            timestamps: vec![None, Some(dt(1)), Some(dt(2)), Some(dt(3)), Some(dt(4))],
-            settled: true,
+                job,
+                kind: JobKind::InsuranceWithContingency,
+                timestamps: vec![None, Some(dt(1)), Some(dt(2)), Some(dt(3)), Some(dt(4))],
+                loss_timestamp: None,
             })
         );
 
@@ -584,10 +560,10 @@ mod test {
         assert_eq!(
             job.clone().into_analyzed(),
             Ok(AnalyzedJob {
-            job,
-            kind: JobKind::InsuranceWithContingency,
-            timestamps: vec![None, Some(dt(1))],
-            settled: true,
+                job,
+                kind: JobKind::InsuranceWithContingency,
+                timestamps: vec![None, Some(dt(1))],
+                loss_timestamp: Some(dt(5)),
             })
         );
     }
