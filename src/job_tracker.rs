@@ -1,6 +1,6 @@
 use std::{fmt::Display, usize};
 
-use crate::{TimeDelta, Timestamp};
+use crate::jobs::{TimeDelta, Timestamp};
 
 #[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
 struct Bucket {
