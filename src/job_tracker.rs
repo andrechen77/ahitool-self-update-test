@@ -3,17 +3,17 @@ use std::{fmt::Display, usize};
 use crate::jobs::{TimeDelta, Timestamp};
 
 #[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
-struct Bucket {
+pub struct Bucket {
     /// The number of jobs that have achieved this milestone.
-    achieved: usize,
+    pub achieved: usize,
     /// The cumulative time in it took for all jobs to reach this milestone. The
     /// average time per job is this field divided by `achieved`.
-    cum_achieve_time: TimeDelta,
+    pub cum_achieve_time: TimeDelta,
     /// The cumulative time it took for jobs that were trying to reach this
     /// milestone but were lost to be lost. The average time per job is this
     /// field divided by the difference between the number of jobs trying to
     /// reach this field and `achieved`.
-    cum_loss_time: TimeDelta,
+    pub cum_loss_time: TimeDelta,
 }
 
 /// Each row corresponds to one possible kind of job, and tracks data for that
@@ -90,6 +90,10 @@ impl<const M: usize, const N: usize> JobTracker<M, N> {
         }
     }
 
+    pub fn get_bucket(&self, kind: usize, milestone: usize) -> Option<&Bucket> {
+        self.buckets[kind][milestone].as_ref()
+    }
+
     fn bucket_before(&self, kind: usize, milestone: usize) -> Option<&Bucket> {
         (0..milestone).rev().find_map(|ms| self.buckets[kind][ms].as_ref())
     }
@@ -135,7 +139,7 @@ impl<const M: usize, const N: usize> JobTracker<M, N> {
             })
             .sum::<usize>();
         let conversion_rate =
-            if num_potential == 0 { 1.0 } else { num_total as f64 / num_potential as f64 };
+            if num_potential == 0 { 0.0 } else { num_total as f64 / num_potential as f64 };
         let total_time_to_achieve =
             buckets.iter().map(|bucket| bucket.cum_achieve_time).sum::<TimeDelta>();
         let average_time_to_achieve = if num_total == 0 {
