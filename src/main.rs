@@ -366,7 +366,7 @@ impl Job {
 
                     // verify that the date is greater than the previous date
                     if let Some(previous_date) = previous_date {
-                        if date <= previous_date {
+                        if date < previous_date {
                             return Err((self, JobAnalysisError::OutOfOrderDates(Some(milestone))));
                         }
                     }
@@ -390,7 +390,7 @@ impl Job {
         if let Some(loss_date) = &self.milestone_dates.loss_date {
             // ensure that the loss date comes after all other dates
             if let Some(previous_date) = &previous_date {
-                if loss_date <= previous_date {
+                if loss_date < previous_date {
                     return Err((self, JobAnalysisError::OutOfOrderDates(None)));
                 }
             }
