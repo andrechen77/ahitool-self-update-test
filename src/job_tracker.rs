@@ -306,7 +306,7 @@ mod test {
             ],
         };
 
-        assert_eq!(tracker.calc_stats_of_loss(), (70, (tu * 10) / 70));
+        assert_eq!(tracker.calc_stats_of_loss(), (52, (tu * 7) / 52));
     }
 
     #[test]
