@@ -8,12 +8,12 @@ const KEY_INSURANCE_CHECKBOX: &str = "Insurance Job?";
 const KEY_INSURANCE_COMPANY_NAME: &str = "Insurance Company";
 const KEY_INSURANCE_CLAIM_NUMBER: &str = "Claim #";
 const KEY_JOB_NUMBER: &str = "number";
-const KEY_CUSTOMER_NAME: &str = "name";
+const KEY_JOB_NAME: &str = "name";
 const KEY_APPOINTMENT_DATE: &str = "Sales Appt #1 Date";
 const KEY_CONTINGENCY_DATE: &str = "Signed Contingency Date";
 const KEY_CONTRACT_DATE: &str = "Signed Contract Date";
 const KEY_INSTALL_DATE: &str = "Install Date";
-const KEY_LOSS_DATE: &str = "Loss Date (if applicable)";
+const KEY_LOSS_DATE: &str = "Job Lost Date (if applicable)";
 
 pub type Timestamp = DateTime<Utc>;
 pub type TimeDelta = chrono::TimeDelta;
@@ -100,7 +100,7 @@ pub struct Job {
     pub insurance_claim_number: Option<String>,
 	pub insurance_company_name: Option<String>,
     pub job_number: Option<String>,
-    pub customer_name: Option<String>,
+    pub job_name: Option<String>,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -270,7 +270,7 @@ impl TryFrom<serde_json::Value> for Job {
 		let insurance_company_name = get_owned_nonempty(&map, KEY_INSURANCE_COMPANY_NAME);
         let insurance_claim_number = get_owned_nonempty(&map, KEY_INSURANCE_CLAIM_NUMBER);
         let job_number = get_owned_nonempty(&map, KEY_JOB_NUMBER);
-        let customer_name = get_owned_nonempty(&map, KEY_CUSTOMER_NAME);
+        let job_name = get_owned_nonempty(&map, KEY_JOB_NAME);
 
         // the JobNimbus API sometimes returns a 0 timestamp for a date that has
         // no value, so we want to filter those out as if the value did not
@@ -299,7 +299,7 @@ impl TryFrom<serde_json::Value> for Job {
 			insurance_company_name,
             insurance_claim_number,
             job_number,
-            customer_name,
+            job_name,
             milestone_dates: MilestoneDates {
                 appointment_date,
                 contingency_date,
@@ -337,7 +337,7 @@ mod test {
             insurance_claim_number: if insurance { Some("123".to_owned()) } else { None },
 			insurance_company_name: if insurance { Some("Gekko".to_owned()) } else { None },
             job_number: None,
-            customer_name: None,
+            job_name: None,
             milestone_dates: MilestoneDates {
                 appointment_date: date_1,
                 contingency_date: date_2,
