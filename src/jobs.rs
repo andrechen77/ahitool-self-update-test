@@ -155,6 +155,8 @@ pub enum JobAnalysisError {
     OutOfOrderDates(Option<Milestone>),
     #[error("This job has skipped the date for the milestone {0:?}.")]
     SkippedDates(Milestone),
+    #[error("This job has a loss date, but it has already been installed/contracted.")]
+    InvalidLoss,
 }
 
 impl TryFrom<Job> for AnalyzedJob {
@@ -190,7 +192,7 @@ impl TryFrom<Job> for AnalyzedJob {
                     {
                         return Err((job, JobAnalysisError::ContingencyWithoutInsurance));
                     }
-                    if milestone == Milestone::ContractSigned
+                    if milestone > Milestone::ContingencySigned
                         && job.milestone_dates.contingency_date.is_none()
                         && job.insurance_claim_number.is_some()
                     {
@@ -226,6 +228,12 @@ impl TryFrom<Job> for AnalyzedJob {
                 if loss_date < previous_date {
                     return Err((job, JobAnalysisError::OutOfOrderDates(None)));
                 }
+            }
+
+            // the job cannot be lost after a contract has been signed or a
+            // job has been installed
+            if current_milestone >= Milestone::ContractSigned {
+                return Err((job, JobAnalysisError::InvalidLoss));
             }
         };
 
