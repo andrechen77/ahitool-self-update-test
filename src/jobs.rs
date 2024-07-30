@@ -4,6 +4,8 @@ use chrono::{DateTime, Utc};
 
 const KEY_JNID: &str = "jnid";
 const KEY_SALES_REP: &str = "sales_rep_name";
+const KEY_INSURANCE_CHECKBOX: &str = "Insurance Job?";
+const KEY_INSURANCE_COMPANY_NAME: &str = "Insurance Company";
 const KEY_INSURANCE_CLAIM_NUMBER: &str = "Claim #";
 const KEY_JOB_NUMBER: &str = "number";
 const KEY_CUSTOMER_NAME: &str = "name";
@@ -94,7 +96,9 @@ pub struct Job {
     pub jnid: String,
     pub milestone_dates: MilestoneDates,
     pub sales_rep: Option<String>,
+	pub insurance_checkbox: bool,
     pub insurance_claim_number: Option<String>,
+	pub insurance_company_name: Option<String>,
     pub job_number: Option<String>,
     pub customer_name: Option<String>,
 }
@@ -142,9 +146,11 @@ impl AnalyzedJob {
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum JobAnalysisError {
     #[error(
-        "This job has signed a contingency form, but does not have an insurance claim number."
+        "This job has signed a contingency form, but is not an insurance job."
     )]
     ContingencyWithoutInsurance,
+	#[error("This job's insurance checkbox isn't checked, but it has an insurance company name and/or claim number.")]
+	InconsistentInsuranceInfo,
     #[error("The date for {} does not follow previous dates.", .0.map(|stage| stage.to_string()).unwrap_or("Job Lost".to_owned()))]
     OutOfOrderDates(Option<Milestone>),
     #[error("This job has skipped the date for the milestone {0:?}.")]
@@ -160,9 +166,14 @@ impl TryFrom<Job> for AnalyzedJob {
         let mut previous_date = None;
         let mut current_milestone = Milestone::LeadAcquired;
         let mut in_progress = true; // whether retracing of the job's history is still in progress
-        let mut kind = if job.insurance_claim_number.is_some() {
+        let mut kind = if job.insurance_checkbox {
             JobKind::InsuranceWithContingency
         } else {
+			// make sure that there isn't inconsistent insurance information
+			if job.insurance_company_name.is_some() || job.insurance_claim_number.is_some() {
+				return Err((job, JobAnalysisError::InconsistentInsuranceInfo));
+			}
+
             JobKind::Retail
         };
         for milestone in Milestone::ordered_iter().skip(1) {
@@ -255,6 +266,8 @@ impl TryFrom<serde_json::Value> for Job {
         }
 
         let sales_rep = get_owned_nonempty(&map, KEY_SALES_REP);
+		let insurance_checkbox = map.get(KEY_INSURANCE_CHECKBOX).and_then(|val| val.as_bool()).unwrap_or(false);
+		let insurance_company_name = get_owned_nonempty(&map, KEY_INSURANCE_COMPANY_NAME);
         let insurance_claim_number = get_owned_nonempty(&map, KEY_INSURANCE_CLAIM_NUMBER);
         let job_number = get_owned_nonempty(&map, KEY_JOB_NUMBER);
         let customer_name = get_owned_nonempty(&map, KEY_CUSTOMER_NAME);
@@ -282,6 +295,8 @@ impl TryFrom<serde_json::Value> for Job {
         Ok(Job {
             jnid,
             sales_rep,
+			insurance_checkbox,
+			insurance_company_name,
             insurance_claim_number,
             job_number,
             customer_name,
@@ -318,7 +333,9 @@ mod test {
         Job {
             jnid: "0".to_owned(),
             sales_rep: None,
+			insurance_checkbox: insurance,
             insurance_claim_number: if insurance { Some("123".to_owned()) } else { None },
+			insurance_company_name: if insurance { Some("Gekko".to_owned()) } else { None },
             job_number: None,
             customer_name: None,
             milestone_dates: MilestoneDates {
