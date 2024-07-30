@@ -49,7 +49,10 @@ fn request_from_job_nimbus(api_key: &str, num_jobs: usize) -> Result<Response> {
         .get(url.clone())
         .bearer_auth(&api_key)
         .header(CONTENT_TYPE, "application/json")
-        .query(&[("size", num_jobs)])
+        .query(&[
+            ("size", num_jobs.to_string().as_str()),
+            ("filter", include_str!("filter.json"))
+        ])
         .send()?;
     if !response.status().is_success() {
         bail!("Request failed with status code: {}", response.status());

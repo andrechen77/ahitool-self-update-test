@@ -1,0 +1,17 @@
+{
+    "must": [
+        {
+            "range": {
+                "date_created": {
+                    "gte": 1722225600,
+                    "lte": 1722398400
+                }
+            }
+        },
+        {
+            "term": {
+                "sales_rep_name": "Heinrich Asbury"
+            }
+        }
+    ]
+}
