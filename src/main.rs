@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use anyhow::{bail, Result};
 use job_tracker::{CalcStatsResult, JobTracker};
 use jobs::{AnalyzedJob, Job, JobAnalysisError, JobKind, Milestone, TimeDelta};
-use reqwest::{self, header::CONTENT_TYPE};
+use reqwest::{self, blocking::Response, header::CONTENT_TYPE};
 use serde::Deserialize;
 
 mod job_tracker;
@@ -15,7 +15,7 @@ fn main() -> Result<()> {
     let Ok(api_key) = std::env::var("AHI_API_KEY") else {
         bail!("AHI_API_KEY environment variable not set");
     };
-    let jobs = get_all_jobs(&api_key)?;
+    let jobs = get_all_jobs_from_job_nimbus(&api_key)?;
 
     let ProcessJobsResult { global_tracker, rep_specific_trackers, invalid_jobs } =
         process_jobs(jobs.into_iter());
@@ -42,8 +42,23 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+fn request_from_job_nimbus(api_key: &str, num_jobs: usize) -> Result<Response> {
+    let url = reqwest::Url::parse(ENDPOINT_JOBS)?;
+    let client = reqwest::blocking::Client::new();
+    let response = client
+        .get(url.clone())
+        .bearer_auth(&api_key)
+        .header(CONTENT_TYPE, "application/json")
+        .query(&[("size", num_jobs)])
+        .send()?;
+    if !response.status().is_success() {
+        bail!("Request failed with status code: {}", response.status());
+    }
+    Ok(response)
+}
+
 // blocking
-fn get_all_jobs(api_key: &str) -> Result<Vec<Job>> {
+fn get_all_jobs_from_job_nimbus(api_key: &str) -> Result<Vec<Job>> {
     use serde_json::Value;
     #[derive(Deserialize)]
     struct ApiResponse {
@@ -53,33 +68,18 @@ fn get_all_jobs(api_key: &str) -> Result<Vec<Job>> {
 
     println!("getting all jobs from JobNimbus");
 
-    let url = reqwest::Url::parse(ENDPOINT_JOBS)?;
-    let client = reqwest::blocking::Client::new();
-
     // make a request to find out the number of jobs
-    let response = client
-        .get(url.clone())
-        .bearer_auth(&api_key)
-        .header(CONTENT_TYPE, "application/json")
-        .query(&[("size", 1)])
-        .send()?;
-    if !response.status().is_success() {
-        bail!("Request failed with status code: {}", response.status());
-    }
+    let response = request_from_job_nimbus(api_key, 1)?;
     let response: ApiResponse = response.json()?;
-    let count = response.count;
+    let count = response.count as usize;
+
     println!("detected {} jobs in JobNimbus", count);
 
     // make a request to actually get those jobs
-    let response = client
-        .get(url)
-        .bearer_auth(&api_key)
-        .header(CONTENT_TYPE, "application/json")
-        .query(&[("size", count)])
-        .send()?;
+    let response = request_from_job_nimbus(api_key, count)?;
     let response: ApiResponse = response.json()?;
     println!("recieved {} jobs from JobNimbus", response.count);
-    assert_eq!(response.count, count);
+    assert_eq!(response.count as usize, count);
 
     let results: Result<Vec<_>, _> = response.results.into_iter().map(Job::try_from).collect();
     Ok(results?)
