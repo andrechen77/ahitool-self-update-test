@@ -142,10 +142,12 @@ fn format_job_tracker_results(tracker: &JobTracker3x5) -> String {
     let (num_losses, avg_loss_time) = tracker.calc_stats_of_loss();
     let loss_rate = if num_appts == 0 { 0.0 } else { num_losses as f64 / num_appts as f64 };
 
+    let num_insure_appts = tracker.calc_stats(Milestone::AppointmentMade.into_int(), &[iwc, iwo]).num_total;
+
     // from appt to contingency (insurance)
     let (appt_continge_total, appt_continge_conv, appt_continge_time) = {
         let &job_tracker::Bucket { achieved, cum_achieve_time, .. } = tracker.get_bucket(iwc, Milestone::ContingencySigned.into_int()).unwrap();
-        let rate = if num_appts == 0 { 0.0 } else { achieved as f64 / num_appts as f64 };
+        let rate = if num_appts == 0 { 0.0 } else { achieved as f64 / num_insure_appts as f64 };
         let time = if achieved == 0 { TimeDelta::zero() } else { cum_achieve_time / achieved.try_into().unwrap() };
         (achieved, rate, time)
     };
@@ -153,7 +155,7 @@ fn format_job_tracker_results(tracker: &JobTracker3x5) -> String {
     // from appt to contract (insurance)
     let (appt_contract_insure_total, appt_contract_insure_conv, appt_contract_insure_time) = {
         let &job_tracker::Bucket { achieved, cum_achieve_time, .. } = tracker.get_bucket(iwo, Milestone::ContractSigned.into_int()).unwrap();
-        let rate = if num_appts == 0 { 0.0 } else { achieved as f64 / num_appts as f64 };
+        let rate = if num_appts == 0 { 0.0 } else { achieved as f64 / num_insure_appts as f64 };
         let time = if achieved == 0 { TimeDelta::zero() } else { cum_achieve_time / achieved.try_into().unwrap() };
         (achieved, rate, time)
     };
