@@ -195,7 +195,11 @@ impl<const M: usize, const N: usize> Display for JobTracker<M, N> {
         for row in self.buckets.iter() {
             for bucket in row.iter() {
                 if let Some(bucket) = bucket {
-                    write!(f, "({:3} {:5} {:5})", bucket.achieved, bucket.cum_achieve_time, bucket.cum_loss_time)?;
+                    write!(
+                        f,
+                        "({:3} {:5} {:5})",
+                        bucket.achieved, bucket.cum_achieve_time, bucket.cum_loss_time
+                    )?;
                 } else {
                     write!(f, "(--- ----- -----)")?;
                 }

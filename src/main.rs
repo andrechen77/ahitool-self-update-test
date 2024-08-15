@@ -130,6 +130,7 @@ fn build_job_tracker() -> JobTracker3x5 {
     ])
 }
 
+#[rustfmt::skip] // for the big format! at the end
 fn format_job_tracker_results(tracker: &JobTracker3x5) -> String {
     let iwc = JobKind::InsuranceWithContingency.into_int(); // "insurance with contingency"
     let iwo = JobKind::InsuranceWithoutContingency.into_int(); // "insurance without contingency"
