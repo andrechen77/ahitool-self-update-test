@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use anyhow::{bail, Result};
+use clap::Parser;
 use job_tracker::{CalcStatsResult, JobTracker};
 use jobs::{Job, JobAnalysisError, JobKind, Milestone, TimeDelta};
 use reqwest::{self, blocking::Response, header::CONTENT_TYPE};
@@ -9,13 +10,33 @@ use serde::Deserialize;
 mod job_tracker;
 mod jobs;
 
+#[derive(Parser, Debug)]
+struct CliArgs {
+    /// The filter to use when query JobNimbus for jobs, using ElasticSearch
+    /// syntax.
+    #[arg(short, long = "filter", default_value = None)]
+    filter_filename: Option<String>,
+
+    /// The JobNimbus API key. If omitted, the AHI_API_KEY environment variable
+    /// will be used.
+    #[arg(long, default_value = None)]
+    api_key: Option<String>,
+}
+
 const ENDPOINT_JOBS: &str = "https://app.jobnimbus.com/api1/jobs";
 
 fn main() -> Result<()> {
-    let Ok(api_key) = std::env::var("AHI_API_KEY") else {
+    let CliArgs { filter_filename, api_key } = CliArgs::parse();
+
+    let Some(api_key) = api_key.or(std::env::var("AHI_API_KEY").ok()) else {
         bail!("AHI_API_KEY environment variable not set");
     };
-    let jobs = get_all_jobs_from_job_nimbus(&api_key)?;
+    let filter = if let Some(filter_filename) = filter_filename {
+        Some(std::fs::read_to_string(filter_filename)?)
+    } else {
+        None
+    };
+    let jobs = get_all_jobs_from_job_nimbus(&api_key, filter.as_deref())?;
 
     let ProcessJobsResult { global_tracker, rep_specific_trackers, red_flags } =
         process_jobs(jobs.into_iter());
@@ -42,15 +63,22 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn request_from_job_nimbus(api_key: &str, num_jobs: usize) -> Result<Response> {
+fn request_from_job_nimbus(
+    api_key: &str,
+    num_jobs: usize,
+    filter: Option<&str>,
+) -> Result<Response> {
     let url = reqwest::Url::parse(ENDPOINT_JOBS)?;
     let client = reqwest::blocking::Client::new();
-    let response = client
+    let mut request = client
         .get(url.clone())
         .bearer_auth(&api_key)
         .header(CONTENT_TYPE, "application/json")
-        .query(&[("size", num_jobs.to_string().as_str()), ("filter", include_str!("filter.json"))])
-        .send()?;
+        .query(&[("size", num_jobs.to_string().as_str())]);
+    if let Some(filter) = filter {
+        request = request.query(&[("filter", filter)]);
+    }
+    let response = request.send()?;
     if !response.status().is_success() {
         bail!("Request failed with status code: {}", response.status());
     }
@@ -58,7 +86,7 @@ fn request_from_job_nimbus(api_key: &str, num_jobs: usize) -> Result<Response> {
 }
 
 // blocking
-fn get_all_jobs_from_job_nimbus(api_key: &str) -> Result<Vec<Job>> {
+fn get_all_jobs_from_job_nimbus(api_key: &str, filter: Option<&str>) -> Result<Vec<Job>> {
     use serde_json::Value;
     #[derive(Deserialize)]
     struct ApiResponse {
@@ -69,14 +97,14 @@ fn get_all_jobs_from_job_nimbus(api_key: &str) -> Result<Vec<Job>> {
     println!("getting all jobs from JobNimbus");
 
     // make a request to find out the number of jobs
-    let response = request_from_job_nimbus(api_key, 1)?;
+    let response = request_from_job_nimbus(api_key, 1, filter)?;
     let response: ApiResponse = response.json()?;
     let count = response.count as usize;
 
     println!("detected {} jobs in JobNimbus", count);
 
     // make a request to actually get those jobs
-    let response = request_from_job_nimbus(api_key, count)?;
+    let response = request_from_job_nimbus(api_key, count, filter)?;
     let response: ApiResponse = response.json()?;
     println!("recieved {} jobs from JobNimbus", response.count);
     assert_eq!(response.count as usize, count);

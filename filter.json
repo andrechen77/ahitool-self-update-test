@@ -1,0 +1,14 @@
+{
+    "must": [
+        {
+            "term": {
+                "sales_rep_name": "Heinrich Asbury"
+            }
+        },
+        {
+            "wildcard": {
+                "name": "[FAKE JOB]*"
+            }
+        }
+    ]
+}
