@@ -140,14 +140,14 @@ fn format_job_tracker_results(tracker: &JobTracker3x5) -> String {
     let num_appts = tracker.calc_stats(Milestone::AppointmentMade.into_int(), &[iwc, iwo, ret]).num_total;
     let num_installs = tracker.calc_stats(Milestone::Installed.into_int(), &[iwc, iwo, ret]).num_total;
     let (num_losses, avg_loss_time) = tracker.calc_stats_of_loss();
-    let loss_rate = if num_appts == 0 { 0.0 } else { num_losses as f64 / num_appts as f64 };
+    let loss_rate = if num_appts == 0 { None } else { Some(num_losses as f64 / num_appts as f64) };
 
     let num_insure_appts = tracker.calc_stats(Milestone::AppointmentMade.into_int(), &[iwc, iwo]).num_total;
 
     // from appt to contingency (insurance)
     let (appt_continge_total, appt_continge_conv, appt_continge_time) = {
         let &job_tracker::Bucket { achieved, cum_achieve_time, .. } = tracker.get_bucket(iwc, Milestone::ContingencySigned.into_int()).unwrap();
-        let rate = if num_appts == 0 { 0.0 } else { achieved as f64 / num_insure_appts as f64 };
+        let rate = if num_appts == 0 { None } else { Some(achieved as f64 / num_insure_appts as f64) };
         let time = if achieved == 0 { TimeDelta::zero() } else { cum_achieve_time / achieved.try_into().unwrap() };
         (achieved, rate, time)
     };
@@ -155,7 +155,7 @@ fn format_job_tracker_results(tracker: &JobTracker3x5) -> String {
     // from appt to contract (insurance)
     let (appt_contract_insure_total, appt_contract_insure_conv, appt_contract_insure_time) = {
         let &job_tracker::Bucket { achieved, cum_achieve_time, .. } = tracker.get_bucket(iwo, Milestone::ContractSigned.into_int()).unwrap();
-        let rate = if num_appts == 0 { 0.0 } else { achieved as f64 / num_insure_appts as f64 };
+        let rate = if num_appts == 0 { None } else { Some(achieved as f64 / num_insure_appts as f64) };
         let time = if achieved == 0 { TimeDelta::zero() } else { cum_achieve_time / achieved.try_into().unwrap() };
         (achieved, rate, time)
     };
@@ -192,23 +192,26 @@ fn format_job_tracker_results(tracker: &JobTracker3x5) -> String {
         const SECONDS_PER_DAY: f64 = 86400.0;
         time.num_seconds() as f64 / SECONDS_PER_DAY
     }
+    fn percent_or_na(rate: Option<f64>) -> String {
+        rate.map(|r| format!("{:6.2}%", r * 100.0)).unwrap_or_else(|| "    N/A".to_owned())
+    }
 
     format!(
         "Appts {} | Installed {}\n\
-        All Losses:                   Rate {:6.2}% | Total {:2} | Avg Time {:.2} days\n\
-        Appt to Contingency (I):      Rate {:6.2}% | Total {:2} | Avg Time {:.2} days\n\
-        Appt to Contract (I):         Rate {:6.2}% | Total {:2} | Avg Time {:.2} days\n\
-        Contingency to Contract (I):  Rate {:6.2}% | Total {:2} | Avg Time {:.2} days\n\
-        Appt to Contract (R):         Rate {:6.2}% | Total {:2} | Avg Time {:.2} days\n\
-        Contract to Installation (I): Rate {:6.2}% | Total {:2} | Avg Time {:.2} days\n\
-        Contract to Installation (R): Rate {:6.2}% | Total {:2} | Avg Time {:.2} days",
+        All Losses:                   Rate {} | Total {:2} | Avg Time {:.2} days\n\
+        (I) Appt to Contingency:      Rate {} | Total {:2} | Avg Time {:.2} days\n\
+        (I) Appt to Contract:         Rate {} | Total {:2} | Avg Time {:.2} days\n\
+        (I) Contingency to Contract:  Rate {} | Total {:2} | Avg Time {:.2} days\n\
+        (R) Appt to Contract:         Rate {} | Total {:2} | Avg Time {:.2} days\n\
+        (I) Contract to Installation: Rate {} | Total {:2} | Avg Time {:.2} days\n\
+        (R) Contract to Installation: Rate {} | Total {:2} | Avg Time {:.2} days",
         num_appts, num_installs,
-        loss_rate * 100.0, num_losses, into_days(avg_loss_time),
-        appt_continge_conv * 100.0, appt_continge_total, into_days(appt_continge_time),
-        appt_contract_insure_conv * 100.0, appt_contract_insure_total, into_days(appt_contract_insure_time),
-        continge_contract_conv * 100.0, continge_contract_total, into_days(continge_contract_time),
-        appt_contract_retail_conv * 100.0, appt_contract_retail_total, into_days(appt_contract_retail_time),
-        install_insure_conv * 100.0, install_insure_total, into_days(install_insure_time),
-        install_retail_conv * 100.0, install_retail_total, into_days(install_retail_time),
+        percent_or_na(loss_rate), num_losses, into_days(avg_loss_time),
+        percent_or_na(appt_continge_conv), appt_continge_total, into_days(appt_continge_time),
+        percent_or_na(appt_contract_insure_conv), appt_contract_insure_total, into_days(appt_contract_insure_time),
+        percent_or_na(continge_contract_conv), continge_contract_total, into_days(continge_contract_time),
+        percent_or_na(appt_contract_retail_conv), appt_contract_retail_total, into_days(appt_contract_retail_time),
+        percent_or_na(install_insure_conv), install_insure_total, into_days(install_insure_time),
+        percent_or_na(install_retail_conv), install_retail_total, into_days(install_retail_time),
     )
 }

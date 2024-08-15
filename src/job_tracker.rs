@@ -139,7 +139,7 @@ impl<const M: usize, const N: usize> JobTracker<M, N> {
             })
             .sum::<usize>();
         let conversion_rate =
-            if num_potential == 0 { 0.0 } else { num_total as f64 / num_potential as f64 };
+            if num_potential == 0 { None } else { Some(num_total as f64 / num_potential as f64) };
         let total_time_to_achieve =
             buckets.iter().map(|bucket| bucket.cum_achieve_time).sum::<TimeDelta>();
         let average_time_to_achieve = if num_total == 0 {
@@ -186,7 +186,9 @@ impl<const M: usize, const N: usize> JobTracker<M, N> {
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub struct CalcStatsResult {
     pub num_total: usize,
-    pub conversion_rate: f64,
+    /// This is None if there were no candidates for conversion into the set,
+    /// i.e. if the denominator in the conversion rate calculation is zero.
+    pub conversion_rate: Option<f64>,
     pub average_time_to_achieve: TimeDelta,
 }
 
@@ -247,7 +249,7 @@ mod test {
             tracker.calc_stats(0, &[0, 1, 2]),
             CalcStatsResult {
                 num_total: 80 + 40 + 20,
-                conversion_rate: 1.0,
+                conversion_rate: Some(1.0),
                 average_time_to_achieve: tu * 3 / (80 + 40 + 20),
             }
         );
@@ -255,7 +257,7 @@ mod test {
             tracker.calc_stats(1, &[0, 1, 2]),
             CalcStatsResult {
                 num_total: 70 + 35 + 17,
-                conversion_rate: (70 + 35 + 17) as f64 / (80 + 40 + 20) as f64,
+                conversion_rate: Some((70 + 35 + 17) as f64 / (80 + 40 + 20) as f64),
                 average_time_to_achieve: tu * 3 / (70 + 35 + 17),
             }
         );
@@ -263,7 +265,7 @@ mod test {
             tracker.calc_stats(2, &[0]),
             CalcStatsResult {
                 num_total: 60,
-                conversion_rate: 60.0 / 70.0,
+                conversion_rate: Some(60.0 / 70.0),
                 average_time_to_achieve: tu / 60,
             }
         );
@@ -271,7 +273,7 @@ mod test {
             tracker.calc_stats(3, &[0, 1]),
             CalcStatsResult {
                 num_total: 50 + 25,
-                conversion_rate: (50 + 25) as f64 / (60 + 35) as f64,
+                conversion_rate: Some((50 + 25) as f64 / (60 + 35) as f64),
                 average_time_to_achieve: tu * 2 / (50 + 25),
             }
         );
@@ -279,7 +281,7 @@ mod test {
             tracker.calc_stats(3, &[2]),
             CalcStatsResult {
                 num_total: 12,
-                conversion_rate: 12.0 / 17.0,
+                conversion_rate: Some(12.0 / 17.0),
                 average_time_to_achieve: tu / 12,
             }
         );
