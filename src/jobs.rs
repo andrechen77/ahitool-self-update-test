@@ -1,6 +1,6 @@
+use chrono::{DateTime, Utc};
 use std::{fmt::Display, ops::Index};
 use thiserror::Error;
-use chrono::{DateTime, Utc};
 
 const KEY_JNID: &str = "jnid";
 const KEY_SALES_REP: &str = "sales_rep_name";
@@ -96,9 +96,9 @@ pub struct Job {
     pub jnid: String,
     pub milestone_dates: MilestoneDates,
     pub sales_rep: Option<String>,
-	pub insurance_checkbox: bool,
+    pub insurance_checkbox: bool,
     pub insurance_claim_number: Option<String>,
-	pub insurance_company_name: Option<String>,
+    pub insurance_company_name: Option<String>,
     pub job_number: Option<String>,
     pub job_name: Option<String>,
 }
@@ -145,113 +145,119 @@ impl AnalyzedJob {
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum JobAnalysisError {
-    #[error(
-        "This job has signed a contingency form, but is not an insurance job."
-    )]
+    #[error("This job has signed a contingency form, but is not an insurance job.")]
     ContingencyWithoutInsurance,
-	#[error("This job's insurance checkbox isn't checked, but it has an insurance company name and/or claim number.")]
-	InconsistentInsuranceInfo,
+    #[error("This job's insurance checkbox isn't checked, but it has an insurance company name and/or claim number.")]
+    InconsistentInsuranceInfo,
     #[error("The date for {} does not follow previous dates.", .0.map(|stage| stage.to_string()).unwrap_or("Job Lost".to_owned()))]
     OutOfOrderDates(Option<Milestone>),
-    #[error("This job has skipped the date for the milestone {0:?}.")]
+    #[error("This job has skipped date(s) prior to the milestone {0:?}.")]
     SkippedDates(Milestone),
     #[error("This job has a loss date, but it has already been installed/contracted.")]
     InvalidLoss,
 }
 
-impl TryFrom<Job> for AnalyzedJob {
-	type Error = (Job, JobAnalysisError);
+pub fn analyze_job(job: Job) -> (Result<AnalyzedJob, Job>, Vec<JobAnalysisError>) {
+    let mut errors = Vec::new();
 
-	fn try_from(job: Job) -> Result<Self, (Job, JobAnalysisError)> {
-        // ensure that the milestone dates make chronological sense
-
-        let mut previous_date = None;
-        let mut current_milestone = Milestone::LeadAcquired;
-        let mut in_progress = true; // whether retracing of the job's history is still in progress
-        let mut kind = if job.insurance_checkbox {
+    // determine what kind of job this is. assume that insurance jobs require
+    // contingencies, but we will revise this later if we find that the
+    // contingency was skipped
+    let mut kind = if job.insurance_checkbox {
+        JobKind::InsuranceWithContingency
+    } else {
+        if job.insurance_company_name.is_some() || job.insurance_claim_number.is_some() {
+            // in the case of existing insurance info but unchecked box, log the
+            // inconsistency and proceed as if it was an insurance job
+            errors.push(JobAnalysisError::InconsistentInsuranceInfo);
             JobKind::InsuranceWithContingency
         } else {
-			// make sure that there isn't inconsistent insurance information
-			if job.insurance_company_name.is_some() || job.insurance_claim_number.is_some() {
-				return Err((job, JobAnalysisError::InconsistentInsuranceInfo));
-			}
-
             JobKind::Retail
-        };
-        for milestone in Milestone::ordered_iter().skip(1) {
-            let date = job.milestone_dates[milestone];
+        }
+    };
 
-            if in_progress {
-                if let Some(date) = date {
-                    // this milestone happened, so update the current milestone accordingly
-                    current_milestone = milestone;
+    // ensure that the milestone dates make chronological sense
+    let mut previous_date = None;
+    let mut current_milestone = Milestone::LeadAcquired;
+    let mut in_progress = true; // whether retracing of the job's history is still in progress
+    for milestone in Milestone::ordered_iter().skip(1) {
+        let date = job.milestone_dates[milestone];
 
-                    // update the job kind if necessary
-                    if milestone == Milestone::ContingencySigned
-                        && job.insurance_claim_number.is_none()
-                    {
-                        return Err((job, JobAnalysisError::ContingencyWithoutInsurance));
-                    }
-                    if milestone > Milestone::ContingencySigned
-                        && job.milestone_dates.contingency_date.is_none()
-                        && job.insurance_claim_number.is_some()
-                    {
-                        kind = JobKind::InsuranceWithoutContingency
-                    }
+        if in_progress {
+            if let Some(date) = date {
+                // this milestone happened, so update the current milestone accordingly
+                current_milestone = milestone;
 
-                    // verify that the date is greater than the previous date
-                    if let Some(previous_date) = previous_date {
-                        if date < previous_date {
-                            return Err((job, JobAnalysisError::OutOfOrderDates(Some(milestone))));
-                        }
-                    }
-                    previous_date = Some(date);
-                } else {
-                    if milestone != Milestone::ContingencySigned {
-                        // the job is no longer in progress
-                        in_progress = false;
-                    }
-                    // we make a special exception for the contingency date,
-                    // since not all jobs require it
+                // update the job kind if necessary
+                if milestone == Milestone::ContingencySigned && kind == JobKind::Retail {
+                    kind = JobKind::InsuranceWithContingency;
+                    errors.push(JobAnalysisError::ContingencyWithoutInsurance);
                 }
+                if milestone > Milestone::ContingencySigned
+                    && job.milestone_dates.contingency_date.is_none()
+                    && kind == JobKind::InsuranceWithContingency
+                {
+                    kind = JobKind::InsuranceWithoutContingency
+                }
+
+                // verify that the date is greater than the previous date
+                if let Some(previous_date) = previous_date {
+                    if date < previous_date {
+                        errors.push(JobAnalysisError::OutOfOrderDates(Some(milestone)));
+                        return (Err(job), errors);
+                    }
+                }
+                previous_date = Some(date);
             } else {
-                // retracing is no longer in progress, meaning that some
-                // previous date was None, so this date must also be None
-                if date.is_some() {
-                    return Err((job, JobAnalysisError::SkippedDates(current_milestone)));
+                // a missing date means that the job is no longer in progress.
+                // we make a special exception for the contingency date,
+                // since not all jobs require it
+                if milestone != Milestone::ContingencySigned {
+                    in_progress = false;
                 }
+            }
+        } else {
+            // retracing is no longer in progress, meaning that some
+            // previous date was None, so this date must also be None
+            if date.is_some() {
+                errors.push(JobAnalysisError::SkippedDates(milestone));
+                return (Err(job), errors);
             }
         }
-        if let Some(loss_date) = &job.milestone_dates.loss_date {
-            // ensure that the loss date comes after all other dates
-            if let Some(previous_date) = &previous_date {
-                if loss_date < previous_date {
-                    return Err((job, JobAnalysisError::OutOfOrderDates(None)));
-                }
+    }
+    if let Some(loss_date) = &job.milestone_dates.loss_date {
+        // ensure that the loss date comes after all other dates
+        if let Some(previous_date) = &previous_date {
+            if loss_date < previous_date {
+                errors.push(JobAnalysisError::OutOfOrderDates(None));
+                return (Err(job), errors);
             }
+        }
 
-            // the job cannot be lost after a contract has been signed or a
-            // job has been installed
-            if current_milestone >= Milestone::ContractSigned {
-                return Err((job, JobAnalysisError::InvalidLoss));
-            }
-        };
+        // the job cannot be lost after a contract has been signed or a
+        // job has been installed
+        if current_milestone >= Milestone::ContractSigned {
+            errors.push(JobAnalysisError::InvalidLoss);
+        }
+    };
 
+    (
         Ok(AnalyzedJob {
             kind,
             timestamps: job.milestone_dates.timestamps_up_to(current_milestone),
             loss_timestamp: job.milestone_dates.loss_date.clone(),
             job,
-        })
-    }
+        }),
+        errors,
+    )
 }
 
 #[derive(Error, Debug)]
 pub enum JobFromJsonError {
-	#[error("Expected a JSON object, but got {0:?}")]
-	NotJsonObject(serde_json::Value),
-	#[error("Expected a '{KEY_JNID}' field in the JSON object")]
-	JnidNotFound(serde_json::Map<String, serde_json::Value>),
+    #[error("Expected a JSON object, but got {0:?}")]
+    NotJsonObject(serde_json::Value),
+    #[error("Expected a '{KEY_JNID}' field in the JSON object")]
+    JnidNotFound(serde_json::Map<String, serde_json::Value>),
 }
 
 impl TryFrom<serde_json::Value> for Job {
@@ -259,11 +265,11 @@ impl TryFrom<serde_json::Value> for Job {
 
     fn try_from(value: serde_json::Value) -> Result<Self, JobFromJsonError> {
         let serde_json::Value::Object(map) = value else {
-			return Err(JobFromJsonError::NotJsonObject(value));
+            return Err(JobFromJsonError::NotJsonObject(value));
         };
 
         let Some(jnid) = map.get(KEY_JNID).and_then(|val| val.as_str()).map(str::to_owned) else {
-			return Err(JobFromJsonError::JnidNotFound(map));
+            return Err(JobFromJsonError::JnidNotFound(map));
         };
 
         fn get_owned_nonempty(
@@ -274,8 +280,9 @@ impl TryFrom<serde_json::Value> for Job {
         }
 
         let sales_rep = get_owned_nonempty(&map, KEY_SALES_REP);
-		let insurance_checkbox = map.get(KEY_INSURANCE_CHECKBOX).and_then(|val| val.as_bool()).unwrap_or(false);
-		let insurance_company_name = get_owned_nonempty(&map, KEY_INSURANCE_COMPANY_NAME);
+        let insurance_checkbox =
+            map.get(KEY_INSURANCE_CHECKBOX).and_then(|val| val.as_bool()).unwrap_or(false);
+        let insurance_company_name = get_owned_nonempty(&map, KEY_INSURANCE_COMPANY_NAME);
         let insurance_claim_number = get_owned_nonempty(&map, KEY_INSURANCE_CLAIM_NUMBER);
         let job_number = get_owned_nonempty(&map, KEY_JOB_NUMBER);
         let job_name = get_owned_nonempty(&map, KEY_JOB_NAME);
@@ -303,8 +310,8 @@ impl TryFrom<serde_json::Value> for Job {
         Ok(Job {
             jnid,
             sales_rep,
-			insurance_checkbox,
-			insurance_company_name,
+            insurance_checkbox,
+            insurance_company_name,
             insurance_claim_number,
             job_number,
             job_name,
@@ -341,9 +348,9 @@ mod test {
         Job {
             jnid: "0".to_owned(),
             sales_rep: None,
-			insurance_checkbox: insurance,
+            insurance_checkbox: insurance,
             insurance_claim_number: if insurance { Some("123".to_owned()) } else { None },
-			insurance_company_name: if insurance { Some("Gekko".to_owned()) } else { None },
+            insurance_company_name: if insurance { Some("Gekko".to_owned()) } else { None },
             job_number: None,
             job_name: None,
             milestone_dates: MilestoneDates {
@@ -357,122 +364,206 @@ mod test {
     }
 
     #[test]
-    fn job_status_retail_without_contingency() {
+    fn job_analysis_retail_without_contingency() {
         let job = make_job(false, Some(dt(1)), None, Some(dt(3)), Some(dt(4)), None);
         assert_eq!(
-            AnalyzedJob::try_from(job.clone()),
-            Ok(AnalyzedJob {
-                job,
-                kind: JobKind::Retail,
-                timestamps: vec![None, Some(dt(1)), None, Some(dt(3)), Some(dt(4))],
-                loss_timestamp: None,
-            })
+            analyze_job(job.clone()),
+            (
+                Ok(AnalyzedJob {
+                    job,
+                    kind: JobKind::Retail,
+                    timestamps: vec![None, Some(dt(1)), None, Some(dt(3)), Some(dt(4))],
+                    loss_timestamp: None,
+                }),
+                vec![]
+            )
         );
     }
 
     #[test]
-    fn job_status_retail_with_contingency() {
+    fn job_analysis_retail_with_contingency() {
         let job = make_job(false, Some(dt(1)), Some(dt(2)), Some(dt(3)), Some(dt(4)), None);
         assert_eq!(
-            AnalyzedJob::try_from(job.clone()),
-            Err((job, JobAnalysisError::ContingencyWithoutInsurance))
+            analyze_job(job.clone()),
+            (
+                Ok(AnalyzedJob {
+                    job,
+                    kind: JobKind::InsuranceWithContingency,
+                    timestamps: vec![None, Some(dt(1)), Some(dt(2)), Some(dt(3)), Some(dt(4))],
+                    loss_timestamp: None,
+                }),
+                vec![JobAnalysisError::ContingencyWithoutInsurance]
+            )
         );
     }
 
     #[test]
-    fn job_status_insurance_without_contingency() {
+    fn job_analysis_insurance_without_contingency() {
         let job = make_job(true, Some(dt(1)), None, Some(dt(3)), Some(dt(4)), None);
         assert_eq!(
-            AnalyzedJob::try_from(job.clone()),
-            Ok(AnalyzedJob {
-                job,
-                kind: JobKind::InsuranceWithoutContingency,
-                timestamps: vec![None, Some(dt(1)), None, Some(dt(3)), Some(dt(4))],
-                loss_timestamp: None,
-            })
+            analyze_job(job.clone()),
+            (
+                Ok(AnalyzedJob {
+                    job,
+                    kind: JobKind::InsuranceWithoutContingency,
+                    timestamps: vec![None, Some(dt(1)), None, Some(dt(3)), Some(dt(4))],
+                    loss_timestamp: None,
+                }),
+                vec![]
+            )
         );
     }
 
     #[test]
-    fn job_status_insurance_with_contingency() {
+    fn job_analysis_insurance_with_contingency() {
         let job = make_job(true, Some(dt(1)), Some(dt(2)), Some(dt(3)), Some(dt(4)), None);
         assert_eq!(
-            AnalyzedJob::try_from(job.clone()),
-            Ok(AnalyzedJob {
-                job,
-                kind: JobKind::InsuranceWithContingency,
-                timestamps: vec![None, Some(dt(1)), Some(dt(2)), Some(dt(3)), Some(dt(4))],
-                loss_timestamp: None,
-            })
+            analyze_job(job.clone()),
+            (
+                Ok(AnalyzedJob {
+                    job,
+                    kind: JobKind::InsuranceWithContingency,
+                    timestamps: vec![None, Some(dt(1)), Some(dt(2)), Some(dt(3)), Some(dt(4))],
+                    loss_timestamp: None,
+                }),
+                vec![]
+            )
         );
     }
 
     #[test]
-    fn job_status_insurance_at_each_stage() {
+    fn job_analysis_insurance_at_each_stage() {
         let job = make_job(true, None, None, None, None, None);
         assert_eq!(
-            AnalyzedJob::try_from(job.clone()),
-            Ok(AnalyzedJob {
-                job,
-                kind: JobKind::InsuranceWithContingency,
-                timestamps: vec![None],
-                loss_timestamp: None,
-            })
+            analyze_job(job.clone()),
+            (
+                Ok(AnalyzedJob {
+                    job,
+                    kind: JobKind::InsuranceWithContingency,
+                    timestamps: vec![None],
+                    loss_timestamp: None,
+                }),
+                vec![]
+            )
         );
 
         let job = make_job(true, Some(dt(1)), None, None, None, None);
         assert_eq!(
-            AnalyzedJob::try_from(job.clone()),
-            Ok(AnalyzedJob {
-                job,
-                kind: JobKind::InsuranceWithContingency,
-                timestamps: vec![None, Some(dt(1))],
-                loss_timestamp: None,
-            })
+            analyze_job(job.clone()),
+            (
+                Ok(AnalyzedJob {
+                    job,
+                    kind: JobKind::InsuranceWithContingency,
+                    timestamps: vec![None, Some(dt(1))],
+                    loss_timestamp: None,
+                }),
+                vec![]
+            )
         );
 
         let job = make_job(true, Some(dt(1)), Some(dt(2)), None, None, None);
         assert_eq!(
-            AnalyzedJob::try_from(job.clone()),
-            Ok(AnalyzedJob {
-                job,
-                kind: JobKind::InsuranceWithContingency,
-                timestamps: vec![None, Some(dt(1)), Some(dt(2))],
-                loss_timestamp: None,
-            })
+            analyze_job(job.clone()),
+            (
+                Ok(AnalyzedJob {
+                    job,
+                    kind: JobKind::InsuranceWithContingency,
+                    timestamps: vec![None, Some(dt(1)), Some(dt(2))],
+                    loss_timestamp: None,
+                }),
+                vec![]
+            )
         );
 
         let job = make_job(true, Some(dt(1)), Some(dt(2)), Some(dt(3)), None, None);
         assert_eq!(
-            AnalyzedJob::try_from(job.clone()),
-            Ok(AnalyzedJob {
-                job,
-                kind: JobKind::InsuranceWithContingency,
-                timestamps: vec![None, Some(dt(1)), Some(dt(2)), Some(dt(3))],
-                loss_timestamp: None,
-            })
+            analyze_job(job.clone()),
+            (
+                Ok(AnalyzedJob {
+                    job,
+                    kind: JobKind::InsuranceWithContingency,
+                    timestamps: vec![None, Some(dt(1)), Some(dt(2)), Some(dt(3))],
+                    loss_timestamp: None,
+                }),
+                vec![]
+            )
         );
 
         let job = make_job(true, Some(dt(1)), Some(dt(2)), Some(dt(3)), Some(dt(4)), None);
         assert_eq!(
-            AnalyzedJob::try_from(job.clone()),
-            Ok(AnalyzedJob {
-                job,
-                kind: JobKind::InsuranceWithContingency,
-                timestamps: vec![None, Some(dt(1)), Some(dt(2)), Some(dt(3)), Some(dt(4))],
-                loss_timestamp: None,
-            })
+            analyze_job(job.clone()),
+            (
+                Ok(AnalyzedJob {
+                    job,
+                    kind: JobKind::InsuranceWithContingency,
+                    timestamps: vec![None, Some(dt(1)), Some(dt(2)), Some(dt(3)), Some(dt(4))],
+                    loss_timestamp: None,
+                }),
+                vec![]
+            )
         );
 
         let job = make_job(true, Some(dt(1)), None, None, None, Some(dt(5)));
         assert_eq!(
-            AnalyzedJob::try_from(job.clone()),
-            Ok(AnalyzedJob {
-                job,
-                kind: JobKind::InsuranceWithContingency,
-                timestamps: vec![None, Some(dt(1))],
-                loss_timestamp: Some(dt(5)),
-            })
+            analyze_job(job.clone()),
+            (
+                Ok(AnalyzedJob {
+                    job,
+                    kind: JobKind::InsuranceWithContingency,
+                    timestamps: vec![None, Some(dt(1))],
+                    loss_timestamp: Some(dt(5)),
+                }),
+                vec![]
+            )
+        );
+    }
+
+    #[test]
+    fn job_analysis_loss_after_contract() {
+        let job = make_job(false, Some(dt(1)), None, Some(dt(3)), Some(dt(4)), Some(dt(5)));
+        assert_eq!(
+            analyze_job(job.clone()),
+            (
+                Ok(AnalyzedJob {
+                    job,
+                    kind: JobKind::Retail,
+                    timestamps: vec![None, Some(dt(1)), None, Some(dt(3)), Some(dt(4))],
+                    loss_timestamp: Some(dt(5)),
+                }),
+                vec![JobAnalysisError::InvalidLoss]
+            )
+        );
+    }
+
+    #[test]
+    fn job_analysis_inconsistent_insurance_info() {
+        let job = Job {
+            jnid: "0".to_owned(),
+            sales_rep: None,
+            insurance_checkbox: false,
+            insurance_claim_number: Some("123".to_owned()),
+            insurance_company_name: Some("Gekko".to_owned()),
+            job_number: None,
+            job_name: None,
+            milestone_dates: MilestoneDates {
+                appointment_date: Some(dt(1)),
+                contingency_date: None,
+                contract_date: Some(dt(3)),
+                install_date: Some(dt(4)),
+                loss_date: None,
+            },
+        };
+        assert_eq!(
+            analyze_job(job.clone()),
+            (
+                Ok(AnalyzedJob {
+                    job,
+                    kind: JobKind::InsuranceWithoutContingency,
+                    timestamps: vec![None, Some(dt(1)), None, Some(dt(3)), Some(dt(4))],
+                    loss_timestamp: None,
+                }),
+                vec![JobAnalysisError::InconsistentInsuranceInfo]
+            )
         );
     }
 }

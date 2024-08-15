@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use anyhow::{bail, Result};
 use job_tracker::{CalcStatsResult, JobTracker};
-use jobs::{AnalyzedJob, Job, JobAnalysisError, JobKind, Milestone, TimeDelta};
+use jobs::{Job, JobAnalysisError, JobKind, Milestone, TimeDelta};
 use reqwest::{self, blocking::Response, header::CONTENT_TYPE};
 use serde::Deserialize;
 
@@ -17,7 +17,7 @@ fn main() -> Result<()> {
     };
     let jobs = get_all_jobs_from_job_nimbus(&api_key)?;
 
-    let ProcessJobsResult { global_tracker, rep_specific_trackers, invalid_jobs } =
+    let ProcessJobsResult { global_tracker, rep_specific_trackers, red_flags } =
         process_jobs(jobs.into_iter());
 
     println!("\nGlobal Tracker: ================");
@@ -29,13 +29,13 @@ fn main() -> Result<()> {
         );
         println!("{}", format_job_tracker_results(&tracker));
     }
-    for (rep, jobs) in invalid_jobs {
+    for (rep, red_flags) in red_flags {
         println!(
-            "\nInvalid jobs for {}: ===============",
+            "\nRed flags for {}: ===============",
             rep.unwrap_or("Unknown Sales Rep".to_owned())
         );
-        for (job, err) in jobs {
-            println!("{}: {}", job.job_number.as_deref().unwrap_or("unknown job #"), err);
+        for (job_number, err) in red_flags {
+            println!("{}: {}", job_number.as_deref().unwrap_or("unknown job #"), err);
         }
     }
 
@@ -49,10 +49,7 @@ fn request_from_job_nimbus(api_key: &str, num_jobs: usize) -> Result<Response> {
         .get(url.clone())
         .bearer_auth(&api_key)
         .header(CONTENT_TYPE, "application/json")
-        .query(&[
-            ("size", num_jobs.to_string().as_str()),
-            ("filter", include_str!("filter.json"))
-        ])
+        .query(&[("size", num_jobs.to_string().as_str()), ("filter", include_str!("filter.json"))])
         .send()?;
     if !response.status().is_success() {
         bail!("Request failed with status code: {}", response.status());
@@ -91,14 +88,15 @@ fn get_all_jobs_from_job_nimbus(api_key: &str) -> Result<Vec<Job>> {
 struct ProcessJobsResult {
     global_tracker: JobTracker3x5,
     rep_specific_trackers: HashMap<Option<String>, JobTracker3x5>,
-    invalid_jobs: HashMap<Option<String>, Vec<(Job, JobAnalysisError)>>,
+    red_flags: HashMap<Option<String>, Vec<(Option<String>, JobAnalysisError)>>,
 }
 fn process_jobs(jobs: impl Iterator<Item = Job>) -> ProcessJobsResult {
     let mut global_tracker = build_job_tracker();
     let mut rep_specific_trackers = HashMap::new();
-    let mut invalid_jobs = HashMap::new();
+    let mut red_flags = HashMap::new();
     for job in jobs {
-        match AnalyzedJob::try_from(job) {
+        let (analyzed, errors) = jobs::analyze_job(job);
+        let (sales_rep, job_number) = match analyzed {
             Ok(analyzed) => {
                 // only add settled jobs to the trackers
                 if analyzed.is_settled() {
@@ -109,14 +107,17 @@ fn process_jobs(jobs: impl Iterator<Item = Job>) -> ProcessJobsResult {
                         .or_insert_with(build_job_tracker)
                         .add_job(kind, &analyzed.timestamps, analyzed.loss_timestamp);
                 }
+                (analyzed.job.sales_rep, analyzed.job.job_number)
             }
-            Err((job, err)) => {
-                invalid_jobs.entry(job.sales_rep.clone()).or_insert_with(Vec::new).push((job, err));
-            }
+            Err(job) => (job.sales_rep, job.job_number),
+        };
+        let sales_rep_errors: &mut Vec<_> = red_flags.entry(sales_rep).or_default();
+        for error in errors {
+            sales_rep_errors.push((job_number.clone(), error));
         }
     }
 
-    ProcessJobsResult { global_tracker, rep_specific_trackers, invalid_jobs }
+    ProcessJobsResult { global_tracker, rep_specific_trackers, red_flags }
 }
 
 type JobTracker3x5 = JobTracker<{ JobKind::NUM_VARIANTS }, { Milestone::NUM_VARIANTS }>;
