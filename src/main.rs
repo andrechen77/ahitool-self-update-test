@@ -1,9 +1,9 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, rc::Rc};
 
 use anyhow::{bail, Result};
 use clap::Parser;
 use job_tracker::{CalcStatsResult, JobTracker};
-use jobs::{Job, JobAnalysisError, JobKind, Milestone, TimeDelta};
+use jobs::{AnalyzedJob, Job, JobAnalysisError, JobKind, Milestone, TimeDelta};
 use reqwest::{self, blocking::Response, header::CONTENT_TYPE};
 use serde::Deserialize;
 
@@ -55,8 +55,8 @@ fn main() -> Result<()> {
             "\nRed flags for {}: ===============",
             rep.unwrap_or("Unknown Sales Rep".to_owned())
         );
-        for (job_number, err) in red_flags {
-            println!("{}: {}", job_number.as_deref().unwrap_or("unknown job #"), err);
+        for (job, err) in red_flags {
+            println!("{}: {}", job.job.job_number.as_deref().unwrap_or("unknown job #"), err);
         }
     }
 
@@ -116,7 +116,7 @@ fn get_all_jobs_from_job_nimbus(api_key: &str, filter: Option<&str>) -> Result<V
 struct ProcessJobsResult {
     global_tracker: JobTracker3x5,
     rep_specific_trackers: HashMap<Option<String>, JobTracker3x5>,
-    red_flags: HashMap<Option<String>, Vec<(Option<String>, JobAnalysisError)>>,
+    red_flags: HashMap<Option<String>, Vec<(Rc<AnalyzedJob>, JobAnalysisError)>>,
 }
 fn process_jobs(jobs: impl Iterator<Item = Job>) -> ProcessJobsResult {
     let mut global_tracker = build_job_tracker();
@@ -124,31 +124,37 @@ fn process_jobs(jobs: impl Iterator<Item = Job>) -> ProcessJobsResult {
     let mut red_flags = HashMap::new();
     for job in jobs {
         let (analyzed, errors) = jobs::analyze_job(job);
-        let (sales_rep, job_number) = match analyzed {
-            Ok(analyzed) => {
-                // only add settled jobs to the trackers
-                if analyzed.is_settled() {
-                    let kind = analyzed.kind.into_int();
-                    global_tracker.add_job(kind, &analyzed.timestamps, analyzed.loss_timestamp);
-                    rep_specific_trackers
-                        .entry(analyzed.job.sales_rep.clone())
-                        .or_insert_with(build_job_tracker)
-                        .add_job(kind, &analyzed.timestamps, analyzed.loss_timestamp);
-                }
-                (analyzed.job.sales_rep, analyzed.job.job_number)
+        let analyzed = Rc::new(analyzed);
+        if let AnalyzedJob { analysis: Some(analysis), .. } = analyzed.as_ref() {
+            // only add settled jobs to the trackers
+            if analysis.is_settled() {
+                println!("{:?}", analyzed);
+
+                let kind = analysis.kind.into_int();
+                global_tracker.add_job(
+                    &analyzed,
+                    kind,
+                    &analysis.timestamps,
+                    analysis.loss_timestamp,
+                );
+                rep_specific_trackers
+                    .entry(analyzed.job.sales_rep.clone())
+                    .or_insert_with(build_job_tracker)
+                    .add_job(&analyzed, kind, &analysis.timestamps, analysis.loss_timestamp);
             }
-            Err(job) => (job.sales_rep, job.job_number),
-        };
-        let sales_rep_errors: &mut Vec<_> = red_flags.entry(sales_rep).or_default();
+        }
+        let sales_rep_errors: &mut Vec<_> =
+            red_flags.entry(analyzed.job.sales_rep.clone()).or_default();
         for error in errors {
-            sales_rep_errors.push((job_number.clone(), error));
+            sales_rep_errors.push((analyzed.clone(), error));
         }
     }
 
     ProcessJobsResult { global_tracker, rep_specific_trackers, red_flags }
 }
 
-type JobTracker3x5 = JobTracker<{ JobKind::NUM_VARIANTS }, { Milestone::NUM_VARIANTS }>;
+type JobTracker3x5 =
+    JobTracker<{ JobKind::NUM_VARIANTS }, { Milestone::NUM_VARIANTS }, Rc<AnalyzedJob>>;
 
 fn build_job_tracker() -> JobTracker3x5 {
     JobTracker::new([
@@ -174,17 +180,19 @@ fn format_job_tracker_results(tracker: &JobTracker3x5) -> String {
 
     // from appt to contingency (insurance)
     let (appt_continge_total, appt_continge_conv, appt_continge_time) = {
-        let &job_tracker::Bucket { achieved, cum_achieve_time, .. } = tracker.get_bucket(iwc, Milestone::ContingencySigned.into_int()).unwrap();
+        let job_tracker::Bucket { achieved, cum_achieve_time, .. } = tracker.get_bucket(iwc, Milestone::ContingencySigned.into_int()).unwrap();
+        let achieved = achieved.len();
         let rate = if num_appts == 0 { None } else { Some(achieved as f64 / num_insure_appts as f64) };
-        let time = if achieved == 0 { TimeDelta::zero() } else { cum_achieve_time / achieved.try_into().unwrap() };
+        let time = if achieved == 0 { TimeDelta::zero() } else { *cum_achieve_time / achieved.try_into().unwrap() };
         (achieved, rate, time)
     };
 
     // from appt to contract (insurance)
     let (appt_contract_insure_total, appt_contract_insure_conv, appt_contract_insure_time) = {
-        let &job_tracker::Bucket { achieved, cum_achieve_time, .. } = tracker.get_bucket(iwo, Milestone::ContractSigned.into_int()).unwrap();
+        let job_tracker::Bucket { achieved, cum_achieve_time, .. } = tracker.get_bucket(iwo, Milestone::ContractSigned.into_int()).unwrap();
+        let achieved = achieved.len();
         let rate = if num_appts == 0 { None } else { Some(achieved as f64 / num_insure_appts as f64) };
-        let time = if achieved == 0 { TimeDelta::zero() } else { cum_achieve_time / achieved.try_into().unwrap() };
+        let time = if achieved == 0 { TimeDelta::zero() } else { *cum_achieve_time / achieved.try_into().unwrap() };
         (achieved, rate, time)
     };
 

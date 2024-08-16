@@ -2,10 +2,10 @@ use std::{fmt::Display, usize};
 
 use crate::jobs::{TimeDelta, Timestamp};
 
-#[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
-pub struct Bucket {
-    /// The number of jobs that have achieved this milestone.
-    pub achieved: usize,
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Bucket<J> {
+    /// The jobs that have achieved this milestone.
+    pub achieved: Vec<J>,
     /// The cumulative time in it took for all jobs to reach this milestone. The
     /// average time per job is this field divided by `achieved`.
     pub cum_achieve_time: TimeDelta,
@@ -16,14 +16,24 @@ pub struct Bucket {
     pub cum_loss_time: TimeDelta,
 }
 
+impl<J> Default for Bucket<J> {
+    fn default() -> Self {
+        Bucket {
+            achieved: Vec::new(),
+            cum_achieve_time: TimeDelta::zero(),
+            cum_loss_time: TimeDelta::zero(),
+        }
+    }
+}
+
 /// Each row corresponds to one possible kind of job, and tracks data for that
 /// kind of job.
 #[derive(Debug)]
-pub struct JobTracker<const M: usize, const N: usize> {
-    buckets: [[Option<Bucket>; N]; M],
+pub struct JobTracker<const M: usize, const N: usize, J> {
+    buckets: [[Option<Bucket<J>>; N]; M],
 }
 
-impl<const M: usize, const N: usize> JobTracker<M, N> {
+impl<const M: usize, const N: usize, J: Clone> JobTracker<M, N, J> {
     pub fn new(mask: [[bool; N]; M]) -> Self {
         let buckets =
             mask.map(|row| row.map(|enabled| if enabled { Some(Bucket::default()) } else { None }));
@@ -43,6 +53,7 @@ impl<const M: usize, const N: usize> JobTracker<M, N> {
     /// to if the job reached the final milestone, this should be None.
     pub fn add_job(
         &mut self,
+        job: &J,
         kind: usize,
         timestamps: &[Option<Timestamp>],
         loss_timestamp: Option<Timestamp>,
@@ -58,7 +69,7 @@ impl<const M: usize, const N: usize> JobTracker<M, N> {
                 continue;
             };
 
-            bucket.achieved += 1;
+            bucket.achieved.push(job.clone());
             if let Some(timestamp) = timestamp {
                 // add the time it took to reach this milestone
                 let time_till_this_milestone = if let Some(latest_timestamp) = latest_timestamp {
@@ -90,15 +101,15 @@ impl<const M: usize, const N: usize> JobTracker<M, N> {
         }
     }
 
-    pub fn get_bucket(&self, kind: usize, milestone: usize) -> Option<&Bucket> {
+    pub fn get_bucket(&self, kind: usize, milestone: usize) -> Option<&Bucket<J>> {
         self.buckets[kind][milestone].as_ref()
     }
 
-    fn bucket_before(&self, kind: usize, milestone: usize) -> Option<&Bucket> {
+    fn bucket_before(&self, kind: usize, milestone: usize) -> Option<&Bucket<J>> {
         (0..milestone).rev().find_map(|ms| self.buckets[kind][ms].as_ref())
     }
 
-    fn bucket_after(&mut self, kind: usize, milestone: usize) -> Option<&mut Bucket> {
+    fn bucket_after(&mut self, kind: usize, milestone: usize) -> Option<&mut Bucket<J>> {
         ((milestone + 1)..N)
             .find(|&ms| self.buckets[kind][ms].is_some())
             .and_then(|i| self.buckets[kind][i].as_mut())
@@ -120,7 +131,7 @@ impl<const M: usize, const N: usize> JobTracker<M, N> {
     /// Panics if one of the specified kinds of jobs is not able to reach the
     /// specified milestone.
     pub fn calc_stats(&self, milestone: usize, kinds: &[usize]) -> CalcStatsResult {
-        let buckets: Vec<&Bucket> = kinds
+        let buckets: Vec<&Bucket<J>> = kinds
             .iter()
             .map(|&kind| {
                 self.buckets[kind][milestone]
@@ -128,14 +139,14 @@ impl<const M: usize, const N: usize> JobTracker<M, N> {
                     .expect(&format!("kind {} is not able to reach milestone {}", kind, milestone))
             })
             .collect();
-        let num_total = buckets.iter().map(|bucket| bucket.achieved).sum::<usize>();
+        let num_total = buckets.iter().map(|bucket| bucket.achieved.len()).sum::<usize>();
         let num_potential = kinds
             .iter()
             .enumerate()
             .map(|(i, &kind)| {
                 self.bucket_before(kind, milestone)
-                    .map(|b| b.achieved)
-                    .unwrap_or(buckets[i].achieved)
+                    .map(|b| b.achieved.len())
+                    .unwrap_or(buckets[i].achieved.len())
             })
             .sum::<usize>();
         let conversion_rate =
@@ -167,11 +178,11 @@ impl<const M: usize, const N: usize> JobTracker<M, N> {
                     // we are not in the first iteration of the loop
 
                     // calculate the number lost when moving to this milestone
-                    let num_lost = last_achieved - bucket.achieved;
+                    let num_lost = last_achieved - bucket.achieved.len();
                     total_num_lost += num_lost;
                     total_loss_time += bucket.cum_loss_time;
                 }
-                last_achieved = Some(bucket.achieved);
+                last_achieved = Some(bucket.achieved.len());
             }
         }
         let average_loss_time = if total_num_lost == 0 {
@@ -192,7 +203,7 @@ pub struct CalcStatsResult {
     pub average_time_to_achieve: TimeDelta,
 }
 
-impl<const M: usize, const N: usize> Display for JobTracker<M, N> {
+impl<const M: usize, const N: usize, J> Display for JobTracker<M, N, J> {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         for row in self.buckets.iter() {
             for bucket in row.iter() {
@@ -200,7 +211,9 @@ impl<const M: usize, const N: usize> Display for JobTracker<M, N> {
                     write!(
                         f,
                         "({:3} {:5} {:5})",
-                        bucket.achieved, bucket.cum_achieve_time, bucket.cum_loss_time
+                        bucket.achieved.len(),
+                        bucket.cum_achieve_time,
+                        bucket.cum_loss_time
                     )?;
                 } else {
                     write!(f, "(--- ----- -----)")?;
@@ -216,31 +229,32 @@ impl<const M: usize, const N: usize> Display for JobTracker<M, N> {
 mod test {
     use super::*;
 
+    #[rustfmt::skip]
     #[test]
     fn calc_stats() {
         let tu = TimeDelta::days(10);
         let tracker = JobTracker {
             buckets: [
                 [
-                    Some(Bucket { achieved: 80, cum_achieve_time: tu, cum_loss_time: tu }),
-                    Some(Bucket { achieved: 70, cum_achieve_time: tu, cum_loss_time: tu }),
-                    Some(Bucket { achieved: 60, cum_achieve_time: tu, cum_loss_time: tu }),
-                    Some(Bucket { achieved: 50, cum_achieve_time: tu, cum_loss_time: tu }),
-                    Some(Bucket { achieved: 40, cum_achieve_time: tu, cum_loss_time: tu }),
+                    Some(Bucket { achieved: vec![(); 80], cum_achieve_time: tu, cum_loss_time: tu }),
+                    Some(Bucket { achieved: vec![(); 70], cum_achieve_time: tu, cum_loss_time: tu }),
+                    Some(Bucket { achieved: vec![(); 60], cum_achieve_time: tu, cum_loss_time: tu }),
+                    Some(Bucket { achieved: vec![(); 50], cum_achieve_time: tu, cum_loss_time: tu }),
+                    Some(Bucket { achieved: vec![(); 40], cum_achieve_time: tu, cum_loss_time: tu }),
                 ],
                 [
-                    Some(Bucket { achieved: 40, cum_achieve_time: tu, cum_loss_time: tu }),
-                    Some(Bucket { achieved: 35, cum_achieve_time: tu, cum_loss_time: tu }),
+                    Some(Bucket { achieved: vec![(); 40], cum_achieve_time: tu, cum_loss_time: tu }),
+                    Some(Bucket { achieved: vec![(); 35], cum_achieve_time: tu, cum_loss_time: tu }),
                     None,
-                    Some(Bucket { achieved: 25, cum_achieve_time: tu, cum_loss_time: tu }),
-                    Some(Bucket { achieved: 20, cum_achieve_time: tu, cum_loss_time: tu }),
+                    Some(Bucket { achieved: vec![(); 25], cum_achieve_time: tu, cum_loss_time: tu }),
+                    Some(Bucket { achieved: vec![(); 20], cum_achieve_time: tu, cum_loss_time: tu }),
                 ],
                 [
-                    Some(Bucket { achieved: 20, cum_achieve_time: tu, cum_loss_time: tu }),
-                    Some(Bucket { achieved: 17, cum_achieve_time: tu, cum_loss_time: tu }),
+                    Some(Bucket { achieved: vec![(); 20], cum_achieve_time: tu, cum_loss_time: tu }),
+                    Some(Bucket { achieved: vec![(); 17], cum_achieve_time: tu, cum_loss_time: tu }),
                     None,
-                    Some(Bucket { achieved: 12, cum_achieve_time: tu, cum_loss_time: tu }),
-                    Some(Bucket { achieved: 10, cum_achieve_time: tu, cum_loss_time: tu }),
+                    Some(Bucket { achieved: vec![(); 12], cum_achieve_time: tu, cum_loss_time: tu }),
+                    Some(Bucket { achieved: vec![(); 10], cum_achieve_time: tu, cum_loss_time: tu }),
                 ],
             ],
         };
@@ -287,31 +301,32 @@ mod test {
         );
     }
 
+    #[rustfmt::skip]
     #[test]
     fn calc_stats_of_loss() {
         let tu = TimeDelta::days(10);
         let tracker = JobTracker {
             buckets: [
                 [
-                    Some(Bucket { achieved: 80, cum_achieve_time: tu, cum_loss_time: tu }),
-                    Some(Bucket { achieved: 70, cum_achieve_time: tu, cum_loss_time: tu }),
-                    Some(Bucket { achieved: 60, cum_achieve_time: tu, cum_loss_time: tu }),
-                    Some(Bucket { achieved: 50, cum_achieve_time: tu, cum_loss_time: tu }),
-                    Some(Bucket { achieved: 40, cum_achieve_time: tu, cum_loss_time: tu }),
+                    Some(Bucket { achieved: vec![(); 80], cum_achieve_time: tu, cum_loss_time: tu }),
+                    Some(Bucket { achieved: vec![(); 70], cum_achieve_time: tu, cum_loss_time: tu }),
+                    Some(Bucket { achieved: vec![(); 60], cum_achieve_time: tu, cum_loss_time: tu }),
+                    Some(Bucket { achieved: vec![(); 50], cum_achieve_time: tu, cum_loss_time: tu }),
+                    Some(Bucket { achieved: vec![(); 40], cum_achieve_time: tu, cum_loss_time: tu }),
                 ],
                 [
-                    Some(Bucket { achieved: 40, cum_achieve_time: tu, cum_loss_time: tu }),
-                    Some(Bucket { achieved: 35, cum_achieve_time: tu, cum_loss_time: tu }),
+                    Some(Bucket { achieved: vec![(); 40], cum_achieve_time: tu, cum_loss_time: tu }),
+                    Some(Bucket { achieved: vec![(); 35], cum_achieve_time: tu, cum_loss_time: tu }),
                     None,
-                    Some(Bucket { achieved: 25, cum_achieve_time: tu, cum_loss_time: tu }),
-                    Some(Bucket { achieved: 20, cum_achieve_time: tu, cum_loss_time: tu }),
+                    Some(Bucket { achieved: vec![(); 25], cum_achieve_time: tu, cum_loss_time: tu }),
+                    Some(Bucket { achieved: vec![(); 20], cum_achieve_time: tu, cum_loss_time: tu }),
                 ],
                 [
-                    Some(Bucket { achieved: 20, cum_achieve_time: tu, cum_loss_time: tu }),
-                    Some(Bucket { achieved: 17, cum_achieve_time: tu, cum_loss_time: tu }),
+                    Some(Bucket { achieved: vec![(); 20], cum_achieve_time: tu, cum_loss_time: tu }),
+                    Some(Bucket { achieved: vec![(); 17], cum_achieve_time: tu, cum_loss_time: tu }),
                     None,
-                    Some(Bucket { achieved: 12, cum_achieve_time: tu, cum_loss_time: tu }),
-                    Some(Bucket { achieved: 10, cum_achieve_time: tu, cum_loss_time: tu }),
+                    Some(Bucket { achieved: vec![(); 12], cum_achieve_time: tu, cum_loss_time: tu }),
+                    Some(Bucket { achieved: vec![(); 10], cum_achieve_time: tu, cum_loss_time: tu }),
                 ],
             ],
         };
@@ -319,6 +334,7 @@ mod test {
         assert_eq!(tracker.calc_stats_of_loss(), (52, (tu * 7) / 52));
     }
 
+    #[rustfmt::skip]
     #[test]
     fn add_jobs() {
         // date-time
@@ -336,27 +352,27 @@ mod test {
             [true, true, false, true, true],
         ]);
 
-        tracker.add_job(0, &[None, Some(dt(1)), Some(dt(2)), Some(dt(4)), Some(dt(8))], None);
+        tracker.add_job(&(), 0, &[None, Some(dt(1)), Some(dt(2)), Some(dt(4)), Some(dt(8))], None);
         assert_eq!(
             tracker.buckets[0],
             [
-                Some(Bucket { achieved: 1, cum_achieve_time: td(0), cum_loss_time: td(0) }),
-                Some(Bucket { achieved: 1, cum_achieve_time: td(0), cum_loss_time: td(0) }),
-                Some(Bucket { achieved: 1, cum_achieve_time: td(1), cum_loss_time: td(0) }),
-                Some(Bucket { achieved: 1, cum_achieve_time: td(2), cum_loss_time: td(0) }),
-                Some(Bucket { achieved: 1, cum_achieve_time: td(4), cum_loss_time: td(0) }),
+                Some(Bucket { achieved: vec![(); 1], cum_achieve_time: td(0), cum_loss_time: td(0) }),
+                Some(Bucket { achieved: vec![(); 1], cum_achieve_time: td(0), cum_loss_time: td(0) }),
+                Some(Bucket { achieved: vec![(); 1], cum_achieve_time: td(1), cum_loss_time: td(0) }),
+                Some(Bucket { achieved: vec![(); 1], cum_achieve_time: td(2), cum_loss_time: td(0) }),
+                Some(Bucket { achieved: vec![(); 1], cum_achieve_time: td(4), cum_loss_time: td(0) }),
             ]
         );
 
-        tracker.add_job(0, &[None, Some(dt(2)), None, Some(dt(10))], Some(dt(12)));
+        tracker.add_job(&(), 0, &[None, Some(dt(2)), None, Some(dt(10))], Some(dt(12)));
         assert_eq!(
             tracker.buckets[0],
             [
-                Some(Bucket { achieved: 2, cum_achieve_time: td(0), cum_loss_time: td(0) }),
-                Some(Bucket { achieved: 2, cum_achieve_time: td(0), cum_loss_time: td(0) }),
-                Some(Bucket { achieved: 2, cum_achieve_time: td(1), cum_loss_time: td(0) }),
-                Some(Bucket { achieved: 2, cum_achieve_time: td(10), cum_loss_time: td(0) }),
-                Some(Bucket { achieved: 1, cum_achieve_time: td(4), cum_loss_time: td(2) }),
+                Some(Bucket { achieved: vec![(); 2], cum_achieve_time: td(0), cum_loss_time: td(0) }),
+                Some(Bucket { achieved: vec![(); 2], cum_achieve_time: td(0), cum_loss_time: td(0) }),
+                Some(Bucket { achieved: vec![(); 2], cum_achieve_time: td(1), cum_loss_time: td(0) }),
+                Some(Bucket { achieved: vec![(); 2], cum_achieve_time: td(10), cum_loss_time: td(0) }),
+                Some(Bucket { achieved: vec![(); 1], cum_achieve_time: td(4), cum_loss_time: td(2) }),
             ]
         );
     }
