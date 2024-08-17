@@ -33,7 +33,7 @@ pub struct JobTracker<const M: usize, const N: usize, J> {
     buckets: [[Option<Bucket<J>>; N]; M],
 }
 
-impl<const M: usize, const N: usize, J: Clone> JobTracker<M, N, J> {
+impl<const M: usize, const N: usize, J: Clone + PartialEq> JobTracker<M, N, J> {
     pub fn new(mask: [[bool; N]; M]) -> Self {
         let buckets =
             mask.map(|row| row.map(|enabled| if enabled { Some(Bucket::default()) } else { None }));
@@ -115,22 +115,15 @@ impl<const M: usize, const N: usize, J: Clone> JobTracker<M, N, J> {
             .and_then(|i| self.buckets[kind][i].as_mut())
     }
 
-    /// Considering the set of all the jobs of the given kinds that have
-    /// achieved the given milestone, returns three numbers.
-    ///
-    /// - The total number of jobs in the set.
-    /// - The rate of conversion into the given set; i.e. the total number of
-    /// jobs in the set divided by the total number of jobs that are either in
-    /// the set or were one milestone away from reaching the set. This is 1.0 if
-    /// the set is empty
-    /// - The average duration it took for a job in the set to reach the
-    /// specified milestone. This is zero if the set is empty.
+    /// Considering the set of all the jobs of the given numerator kinds that
+    /// have achieved the given milestone, calculates stats for this set with
+    /// respect to all the jobs of the given denominator kinds.
     ///
     /// # Panics
     ///
     /// Panics if one of the specified kinds of jobs is not able to reach the
     /// specified milestone.
-    pub fn calc_stats(&self, milestone: usize, kinds: &[usize]) -> CalcStatsResult {
+    pub fn calc_stats(&self, milestone: usize, kinds: &[usize]) -> CalcStatsResult<J> {
         let buckets: Vec<&Bucket<J>> = kinds
             .iter()
             .map(|&kind| {
@@ -139,7 +132,8 @@ impl<const M: usize, const N: usize, J: Clone> JobTracker<M, N, J> {
                     .expect(&format!("kind {} is not able to reach milestone {}", kind, milestone))
             })
             .collect();
-        let num_total = buckets.iter().map(|bucket| bucket.achieved.len()).sum::<usize>();
+        let total: Vec<J> = buckets.iter().map(|bucket| &bucket.achieved).flatten().cloned().collect();
+        let num_total = total.len();
         let num_potential = kinds
             .iter()
             .enumerate()
@@ -159,47 +153,47 @@ impl<const M: usize, const N: usize, J: Clone> JobTracker<M, N, J> {
             total_time_to_achieve / num_total.try_into().unwrap()
         };
 
-        CalcStatsResult { num_total, conversion_rate, average_time_to_achieve }
+        CalcStatsResult { total, conversion_rate, average_time_to_achieve }
     }
 
-    /// Considering all jobs, calculates the total number of losses and the
-    /// average time it took to lose the job (counting from the last achieved
-    /// milestone until the time of loss). The average time is zero if there
-    /// were no losses.
-    pub fn calc_stats_of_loss(&self) -> (usize, TimeDelta) {
-        let mut total_num_lost = 0;
+    /// Considering all jobs, collects all losses and the average time it took
+    /// to lose the job (counting from the last achieved milestone until the
+    /// time of loss). The average time is zero if there were no losses.
+    pub fn calc_stats_of_loss(&self) -> (Vec<J>, TimeDelta) {
+        let mut total_lost = Vec::new();
         let mut total_loss_time = TimeDelta::zero();
         for row in self.buckets.iter() {
-            let mut last_achieved = None;
-            // skip 1 because we don't want to count leads that don't turn
-            // into appointments as lost jobs
-            for bucket in row.iter().skip(1).filter_map(|b| b.as_ref()) {
-                if let Some(last_achieved) = last_achieved {
-                    // we are not in the first iteration of the loop
-
-                    // calculate the number lost when moving to this milestone
-                    let num_lost = last_achieved - bucket.achieved.len();
-                    total_num_lost += num_lost;
-                    total_loss_time += bucket.cum_loss_time;
-                }
-                last_achieved = Some(bucket.achieved.len());
+            // calculate the total time spent on losing jobs (lol). skip the
+            // first two milestones because we don't want to count leads that
+            // don't turn into appointments as lost jobs
+            for bucket in row.iter().skip(2).filter_map(|b| b.as_ref()) {
+                total_loss_time += bucket.cum_loss_time;
             }
+
+            let installed = &row[N - 1].as_ref().expect("every job kind should have a final milestone").achieved;
+            total_lost.extend(row[1].as_ref().expect("every job kind should have a second milestone").achieved.iter().filter(|j| !installed.contains(j)).cloned());
         }
-        let average_loss_time = if total_num_lost == 0 {
+        let average_loss_time = if total_lost.len() == 0 {
             TimeDelta::zero()
         } else {
-            total_loss_time / total_num_lost.try_into().unwrap()
+            total_loss_time / total_lost.len().try_into().unwrap()
         };
-        (total_num_lost, average_loss_time)
+        (total_lost, average_loss_time)
     }
 }
 
-#[derive(Debug, PartialEq, Clone, Copy)]
-pub struct CalcStatsResult {
-    pub num_total: usize,
-    /// This is None if there were no candidates for conversion into the set,
-    /// i.e. if the denominator in the conversion rate calculation is zero.
+#[derive(Debug, PartialEq, Clone)]
+pub struct CalcStatsResult<J> {
+    /// All jobs in the set.
+    pub total: Vec<J>,
+    /// The rate of conversion into the given set; i.e. the total number of jobs
+    /// in the set divided by the total number of jobs that are either in the
+    /// set or were one milestone away from reaching the set. This is None if
+    /// there were no candidates for conversion into the set, i.e. if the
+    /// denominator in the conversion rate calculation is zero.
     pub conversion_rate: Option<f64>,
+    /// The average duration it took for a job in the set to reach the specified
+    /// milestone. This is zero if the set is empty.
     pub average_time_to_achieve: TimeDelta,
 }
 
@@ -262,7 +256,7 @@ mod test {
         assert_eq!(
             tracker.calc_stats(0, &[0, 1, 2]),
             CalcStatsResult {
-                num_total: 80 + 40 + 20,
+                total: vec![(); 80 + 40 + 20],
                 conversion_rate: Some(1.0),
                 average_time_to_achieve: tu * 3 / (80 + 40 + 20),
             }
@@ -270,7 +264,7 @@ mod test {
         assert_eq!(
             tracker.calc_stats(1, &[0, 1, 2]),
             CalcStatsResult {
-                num_total: 70 + 35 + 17,
+                total: vec![(); 70 + 35 + 17],
                 conversion_rate: Some((70 + 35 + 17) as f64 / (80 + 40 + 20) as f64),
                 average_time_to_achieve: tu * 3 / (70 + 35 + 17),
             }
@@ -278,7 +272,7 @@ mod test {
         assert_eq!(
             tracker.calc_stats(2, &[0]),
             CalcStatsResult {
-                num_total: 60,
+                total: vec![(); 60],
                 conversion_rate: Some(60.0 / 70.0),
                 average_time_to_achieve: tu / 60,
             }
@@ -286,7 +280,7 @@ mod test {
         assert_eq!(
             tracker.calc_stats(3, &[0, 1]),
             CalcStatsResult {
-                num_total: 50 + 25,
+                total: vec![(); 50 + 25],
                 conversion_rate: Some((50 + 25) as f64 / (60 + 35) as f64),
                 average_time_to_achieve: tu * 2 / (50 + 25),
             }
@@ -294,7 +288,7 @@ mod test {
         assert_eq!(
             tracker.calc_stats(3, &[2]),
             CalcStatsResult {
-                num_total: 12,
+                total: vec![(); 12],
                 conversion_rate: Some(12.0 / 17.0),
                 average_time_to_achieve: tu / 12,
             }
@@ -305,33 +299,38 @@ mod test {
     #[test]
     fn calc_stats_of_loss() {
         let tu = TimeDelta::days(10);
+        let uniques: Vec<i32> = (0..1000).collect();
         let tracker = JobTracker {
             buckets: [
                 [
-                    Some(Bucket { achieved: vec![(); 80], cum_achieve_time: tu, cum_loss_time: tu }),
-                    Some(Bucket { achieved: vec![(); 70], cum_achieve_time: tu, cum_loss_time: tu }),
-                    Some(Bucket { achieved: vec![(); 60], cum_achieve_time: tu, cum_loss_time: tu }),
-                    Some(Bucket { achieved: vec![(); 50], cum_achieve_time: tu, cum_loss_time: tu }),
-                    Some(Bucket { achieved: vec![(); 40], cum_achieve_time: tu, cum_loss_time: tu }),
+                    Some(Bucket { achieved: uniques[000..080].to_owned(), cum_achieve_time: tu, cum_loss_time: tu }),
+                    Some(Bucket { achieved: uniques[000..070].to_owned(), cum_achieve_time: tu, cum_loss_time: tu }),
+                    Some(Bucket { achieved: uniques[000..060].to_owned(), cum_achieve_time: tu, cum_loss_time: tu }),
+                    Some(Bucket { achieved: uniques[000..050].to_owned(), cum_achieve_time: tu, cum_loss_time: tu }),
+                    Some(Bucket { achieved: uniques[000..040].to_owned(), cum_achieve_time: tu, cum_loss_time: tu }),
                 ],
                 [
-                    Some(Bucket { achieved: vec![(); 40], cum_achieve_time: tu, cum_loss_time: tu }),
-                    Some(Bucket { achieved: vec![(); 35], cum_achieve_time: tu, cum_loss_time: tu }),
+                    Some(Bucket { achieved: uniques[100..140].to_owned(), cum_achieve_time: tu, cum_loss_time: tu }),
+                    Some(Bucket { achieved: uniques[100..135].to_owned(), cum_achieve_time: tu, cum_loss_time: tu }),
                     None,
-                    Some(Bucket { achieved: vec![(); 25], cum_achieve_time: tu, cum_loss_time: tu }),
-                    Some(Bucket { achieved: vec![(); 20], cum_achieve_time: tu, cum_loss_time: tu }),
+                    Some(Bucket { achieved: uniques[100..125].to_owned(), cum_achieve_time: tu, cum_loss_time: tu }),
+                    Some(Bucket { achieved: uniques[100..120].to_owned(), cum_achieve_time: tu, cum_loss_time: tu }),
                 ],
                 [
-                    Some(Bucket { achieved: vec![(); 20], cum_achieve_time: tu, cum_loss_time: tu }),
-                    Some(Bucket { achieved: vec![(); 17], cum_achieve_time: tu, cum_loss_time: tu }),
+                    Some(Bucket { achieved: uniques[200..220].to_owned(), cum_achieve_time: tu, cum_loss_time: tu }),
+                    Some(Bucket { achieved: uniques[200..217].to_owned(), cum_achieve_time: tu, cum_loss_time: tu }),
                     None,
-                    Some(Bucket { achieved: vec![(); 12], cum_achieve_time: tu, cum_loss_time: tu }),
-                    Some(Bucket { achieved: vec![(); 10], cum_achieve_time: tu, cum_loss_time: tu }),
+                    Some(Bucket { achieved: uniques[200..212].to_owned(), cum_achieve_time: tu, cum_loss_time: tu }),
+                    Some(Bucket { achieved: uniques[200..210].to_owned(), cum_achieve_time: tu, cum_loss_time: tu }),
                 ],
             ],
         };
 
-        assert_eq!(tracker.calc_stats_of_loss(), (52, (tu * 7) / 52));
+        let mut all_lost = Vec::new();
+        all_lost.extend(&uniques[40..70]);
+        all_lost.extend(&uniques[120..135]);
+        all_lost.extend(&uniques[210..217]);
+        assert_eq!(tracker.calc_stats_of_loss(), (all_lost, (tu * 7) / 52));
     }
 
     #[rustfmt::skip]
