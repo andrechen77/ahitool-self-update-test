@@ -15,6 +15,7 @@ const KEY_CONTRACT_DATE: &str = "Signed Contract Date";
 const KEY_INSTALL_DATE: &str = "Install Date";
 const KEY_LOSS_DATE: &str = "Job Lost Date (if applicable)";
 const KEY_AMOUNT_RECEIVABLE: &str = "approved_invoice_due";
+const KEY_STATUS_NAME: &str = "status_name";
 
 pub type Timestamp = DateTime<Utc>;
 pub type TimeDelta = chrono::TimeDelta;
@@ -92,10 +93,58 @@ impl MilestoneDates {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum Status {
+    IncomingLead,
+    PendingPayments,
+    PostInstallSupplementPending,
+    JobsInProgress,
+    FinalWalkAround,
+    SubmitCoc,
+    PunchList,
+    JobCompleted,
+    Lost,
+    Other(String),
+}
+
+impl From<&str> for Status {
+    fn from(value: &str) -> Self {
+        match value {
+            "Incoming Lead" => Status::IncomingLead,
+            "Pending Payments" => Status::PendingPayments,
+            "Post-Install Supplement Pending" => Status::PostInstallSupplementPending,
+            "Jobs In Progress" => Status::JobsInProgress,
+            "Final Walk Around" => Status::FinalWalkAround,
+            "Submit COC & Proof of Completion" => Status::SubmitCoc,
+            "Punch List" => Status::PunchList,
+            "Job Completed" => Status::JobCompleted,
+            "Lost" => Status::Lost,
+            other => Status::Other(other.to_owned()),
+        }
+    }
+}
+impl Display for Status {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Status::IncomingLead => write!(f, "Incoming Lead"),
+            Status::PendingPayments => write!(f, "Pending Payments"),
+            Status::PostInstallSupplementPending => write!(f, "Post-Install Supplement Pending"),
+            Status::JobsInProgress => write!(f, "Jobs In Progress"),
+            Status::FinalWalkAround => write!(f, "Final Walk Around"),
+            Status::SubmitCoc => write!(f, "Submit COC & Proof of Completion"),
+            Status::PunchList => write!(f, "Punch List"),
+            Status::JobCompleted => write!(f, "Job Completed"),
+            Status::Lost => write!(f, "Lost"),
+            Status::Other(s) => write!(f, "{}", s),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Job {
     pub jnid: String,
     pub milestone_dates: MilestoneDates,
+    pub status: Status,
     pub sales_rep: Option<String>,
     pub insurance_checkbox: bool,
     pub insurance_claim_number: Option<String>,
@@ -274,6 +323,8 @@ pub enum JobFromJsonError {
     NotJsonObject(serde_json::Value),
     #[error("Expected a '{KEY_JNID}' field in the JSON object")]
     JnidNotFound(serde_json::Map<String, serde_json::Value>),
+    #[error("Expected a '{KEY_STATUS_NAME}' field in the JSON object")]
+    StatusNotFound(serde_json::Map<String, serde_json::Value>),
 }
 
 impl TryFrom<serde_json::Value> for Job {
@@ -302,6 +353,12 @@ impl TryFrom<serde_json::Value> for Job {
         let insurance_claim_number = get_owned_nonempty(&map, KEY_INSURANCE_CLAIM_NUMBER);
         let job_number = get_owned_nonempty(&map, KEY_JOB_NUMBER);
         let job_name = get_owned_nonempty(&map, KEY_JOB_NAME);
+
+        let status: Status = if let Some(s) = map.get(KEY_STATUS_NAME).and_then(|v| v.as_str()) {
+            s.into()
+        } else {
+            return Err(JobFromJsonError::StatusNotFound(map));
+        };
 
         let amt_receivable = map
             .get(KEY_AMOUNT_RECEIVABLE)
@@ -332,6 +389,7 @@ impl TryFrom<serde_json::Value> for Job {
         Ok(Job {
             jnid,
             sales_rep,
+            status,
             insurance_checkbox,
             insurance_company_name,
             insurance_claim_number,
@@ -371,6 +429,7 @@ mod test {
         Job {
             jnid: "0".to_owned(),
             sales_rep: None,
+            status: Status::JobsInProgress, // arbitrary choice that shouldn't matter for tests
             insurance_checkbox: insurance,
             insurance_claim_number: if insurance { Some("123".to_owned()) } else { None },
             insurance_company_name: if insurance { Some("Gekko".to_owned()) } else { None },
@@ -586,6 +645,7 @@ mod test {
         let job = Job {
             jnid: "0".to_owned(),
             sales_rep: None,
+            status: Status::JobsInProgress, // arbitrary; shouldn't affect tests
             insurance_checkbox: false,
             insurance_claim_number: Some("123".to_owned()),
             insurance_company_name: Some("Gekko".to_owned()),
