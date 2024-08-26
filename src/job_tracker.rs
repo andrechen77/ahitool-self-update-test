@@ -132,7 +132,8 @@ impl<const M: usize, const N: usize, J: Clone + PartialEq> JobTracker<M, N, J> {
                     .expect(&format!("kind {} is not able to reach milestone {}", kind, milestone))
             })
             .collect();
-        let total: Vec<J> = buckets.iter().map(|bucket| &bucket.achieved).flatten().cloned().collect();
+        let total: Vec<J> =
+            buckets.iter().map(|bucket| &bucket.achieved).flatten().cloned().collect();
         let num_total = total.len();
         let num_potential = kinds
             .iter()
@@ -170,8 +171,19 @@ impl<const M: usize, const N: usize, J: Clone + PartialEq> JobTracker<M, N, J> {
                 total_loss_time += bucket.cum_loss_time;
             }
 
-            let installed = &row[N - 1].as_ref().expect("every job kind should have a final milestone").achieved;
-            total_lost.extend(row[1].as_ref().expect("every job kind should have a second milestone").achieved.iter().filter(|j| !installed.contains(j)).cloned());
+            let installed = &row[N - 1]
+                .as_ref()
+                .expect("every job kind should have a final milestone")
+                .achieved;
+            total_lost.extend(
+                row[1]
+                    .as_ref()
+                    .expect("every job kind should have a second milestone")
+                    .achieved
+                    .iter()
+                    .filter(|j| !installed.contains(j))
+                    .cloned(),
+            );
         }
         let average_loss_time = if total_lost.len() == 0 {
             TimeDelta::zero()
