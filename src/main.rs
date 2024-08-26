@@ -1,7 +1,9 @@
 use anyhow::{bail, Result};
 use clap::Parser;
 
+mod acc_receivable;
 mod job_kpi;
+mod job_nimbus_api;
 mod job_tracker;
 mod jobs;
 
@@ -21,6 +23,8 @@ struct CliArgs {
 enum Subcommand {
     /// Generate a KPI report for salesmen based on job milestones.
     JobKpi(job_kpi::Args),
+    /// Generate a report for all accounts receivable.
+    AccRecv(acc_receivable::Args),
 }
 
 fn main() -> Result<()> {
@@ -33,6 +37,9 @@ fn main() -> Result<()> {
     match command {
         Some(Subcommand::JobKpi(job_kpi_args)) => {
             job_kpi::main(&api_key, job_kpi_args)?;
+        }
+        Some(Subcommand::AccRecv(acc_recv_args)) => {
+            acc_receivable::main(&api_key, acc_recv_args)?;
         }
         None => bail!("No command specified"),
     }

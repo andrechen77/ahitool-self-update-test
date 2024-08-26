@@ -14,6 +14,7 @@ const KEY_CONTINGENCY_DATE: &str = "Signed Contingency Date";
 const KEY_CONTRACT_DATE: &str = "Signed Contract Date";
 const KEY_INSTALL_DATE: &str = "Install Date";
 const KEY_LOSS_DATE: &str = "Job Lost Date (if applicable)";
+const KEY_AMOUNT_RECEIVABLE: &str = "approved_invoice_due";
 
 pub type Timestamp = DateTime<Utc>;
 pub type TimeDelta = chrono::TimeDelta;
@@ -101,6 +102,8 @@ pub struct Job {
     pub insurance_company_name: Option<String>,
     pub job_number: Option<String>,
     pub job_name: Option<String>,
+    /// The amount receivable on this job, in cents.
+    pub amt_receivable: i32,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -300,6 +303,12 @@ impl TryFrom<serde_json::Value> for Job {
         let job_number = get_owned_nonempty(&map, KEY_JOB_NUMBER);
         let job_name = get_owned_nonempty(&map, KEY_JOB_NAME);
 
+        let amt_receivable = map
+            .get(KEY_AMOUNT_RECEIVABLE)
+            .and_then(|val| val.as_f64())
+            .map(|val| val * 100.0)
+            .unwrap_or(0.0) as i32;
+
         // the JobNimbus API sometimes returns a 0 timestamp for a date that has
         // no value, so we want to filter those out as if the value did not
         // exist
@@ -335,6 +344,7 @@ impl TryFrom<serde_json::Value> for Job {
                 install_date,
                 loss_date,
             },
+            amt_receivable,
         })
     }
 }
@@ -373,6 +383,7 @@ mod test {
                 install_date: date_4,
                 loss_date: date_5,
             },
+            amt_receivable: 0,
         }
     }
 
@@ -587,6 +598,7 @@ mod test {
                 install_date: Some(dt(4)),
                 loss_date: None,
             },
+            amt_receivable: 0,
         };
         assert_eq!(
             analyze_job(job.clone()),
