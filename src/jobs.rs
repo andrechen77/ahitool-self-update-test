@@ -196,8 +196,20 @@ pub struct AnalyzedJob {
 }
 
 impl JobAnalysis {
-    pub fn is_settled(&self) -> bool {
-        self.loss_timestamp.is_some() || self.timestamps.len() == Milestone::NUM_VARIANTS
+    /// Returns the date at which the job was settled, or `None` if the job is
+    /// not settled.
+    pub fn date_settled(&self) -> Option<Timestamp> {
+        if let Some(loss_timestamp) = self.loss_timestamp {
+            return Some(loss_timestamp);
+        }
+        if self.timestamps.len() == Milestone::NUM_VARIANTS {
+            // `find_map` will only return `None` if all the timestamps were
+            // `None`, which would imply that the job was settled since the
+            // beginning of time. in that case panic since something has
+            // probably gone wrong :P
+            return Some(self.timestamps.iter().rev().find_map(|&ts| ts).unwrap());
+        }
+        None
     }
 }
 

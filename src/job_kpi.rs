@@ -3,7 +3,15 @@ use std::{collections::HashMap, rc::Rc};
 use crate::job_nimbus_api;
 use crate::job_tracker;
 use crate::jobs;
+use crate::jobs::Timestamp;
+use anyhow::Context;
 use anyhow::Result;
+use chrono::Datelike as _;
+use chrono::NaiveDate;
+use chrono::NaiveDateTime;
+use chrono::NaiveTime;
+use chrono::TimeZone as _;
+use chrono::Utc;
 use job_tracker::{CalcStatsResult, JobTracker};
 use jobs::{AnalyzedJob, Job, JobAnalysisError, JobKind, Milestone, TimeDelta};
 
@@ -13,10 +21,19 @@ pub struct Args {
     /// syntax.
     #[arg(short, long = "filter", default_value = None)]
     filter_filename: Option<String>,
+
+    /// The minimum date to filter jobs by. The final report will only include
+    /// jobs where the date that they were settled (date of install or date of
+    /// loss) after the minimum date. Valid options are a number (indicating a
+    /// number of days before the current date), a date of the form
+    /// "%Y-%m-%d", "ytd" (indicating the start of the current year), or
+    /// "forever" to include all jobs.
+    #[arg(short, long = "min-date", default_value = "forever")]
+    min_date: String,
 }
 
 pub fn main(api_key: &str, args: Args) -> Result<()> {
-    let Args { filter_filename } = args;
+    let Args { filter_filename, min_date } = args;
     let filter = if let Some(filter_filename) = filter_filename {
         Some(std::fs::read_to_string(filter_filename)?)
     } else {
@@ -24,8 +41,24 @@ pub fn main(api_key: &str, args: Args) -> Result<()> {
     };
     let jobs = job_nimbus_api::get_all_jobs_from_job_nimbus(&api_key, filter.as_deref())?;
 
+    let min_date = match min_date.as_str() {
+        "forever" => None,
+        "ytd" => Some(
+            Utc.from_utc_datetime(&NaiveDateTime::new(
+                NaiveDate::from_ymd_opt(Utc::now().year(), 1, 1)
+                    .expect("Jan 1 should always be valid in the current year."),
+                NaiveTime::MIN,
+            )),
+        ),
+        date_string => Some(
+            NaiveDate::parse_from_str(date_string, "%Y-%m-%d")
+                .map(|date| Utc.from_utc_datetime(&NaiveDateTime::new(date, NaiveTime::MIN)))
+                .context("Invalid date format. Use 'forever', 'ytd', or '%Y-%m-%d'.")?,
+        ),
+    };
+
     let ProcessJobsResult { global_tracker, rep_specific_trackers, red_flags } =
-        process_jobs(jobs.into_iter());
+        process_jobs(jobs.into_iter(), min_date);
 
     println!("\nGlobal Tracker: ================");
     println!("{}", format_job_tracker_results(&global_tracker));
@@ -54,7 +87,12 @@ struct ProcessJobsResult {
     rep_specific_trackers: HashMap<Option<String>, JobTracker3x5>,
     red_flags: HashMap<Option<String>, Vec<(Rc<AnalyzedJob>, JobAnalysisError)>>,
 }
-fn process_jobs(jobs: impl Iterator<Item = Job>) -> ProcessJobsResult {
+fn process_jobs(jobs: impl Iterator<Item = Job>, min_dt: Option<Timestamp>) -> ProcessJobsResult {
+    println!(
+        "Processing jobs settled after {}",
+        min_dt.map(|dt| dt.to_string()).as_deref().unwrap_or("the beginning of time")
+    );
+
     let mut global_tracker = build_job_tracker();
     let mut rep_specific_trackers = HashMap::new();
     let mut red_flags = HashMap::new();
@@ -62,19 +100,21 @@ fn process_jobs(jobs: impl Iterator<Item = Job>) -> ProcessJobsResult {
         let (analyzed, errors) = jobs::analyze_job(job);
         let analyzed = Rc::new(analyzed);
         if let AnalyzedJob { analysis: Some(analysis), .. } = analyzed.as_ref() {
-            // only add settled jobs to the trackers
-            if analysis.is_settled() {
-                let kind = analysis.kind.into_int();
-                global_tracker.add_job(
-                    &analyzed,
-                    kind,
-                    &analysis.timestamps,
-                    analysis.loss_timestamp,
-                );
-                rep_specific_trackers
-                    .entry(analyzed.job.sales_rep.clone())
-                    .or_insert_with(build_job_tracker)
-                    .add_job(&analyzed, kind, &analysis.timestamps, analysis.loss_timestamp);
+            // only add jobs that were settled, and after the min date too
+            if let Some(date_settled) = analysis.date_settled() {
+                if min_dt.is_none() || date_settled >= min_dt.unwrap() {
+                    let kind = analysis.kind.into_int();
+                    global_tracker.add_job(
+                        &analyzed,
+                        kind,
+                        &analysis.timestamps,
+                        analysis.loss_timestamp,
+                    );
+                    rep_specific_trackers
+                        .entry(analyzed.job.sales_rep.clone())
+                        .or_insert_with(build_job_tracker)
+                        .add_job(&analyzed, kind, &analysis.timestamps, analysis.loss_timestamp);
+                }
             }
         }
         let sales_rep_errors: &mut Vec<_> =
