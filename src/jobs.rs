@@ -16,6 +16,7 @@ const KEY_INSTALL_DATE: &str = "Install Date";
 const KEY_LOSS_DATE: &str = "Job Lost Date (if applicable)";
 const KEY_AMOUNT_RECEIVABLE: &str = "approved_invoice_due";
 const KEY_STATUS_NAME: &str = "status_name";
+const KEY_STATUS_MOD_TIME: &str = "date_status_change";
 
 pub type Timestamp = DateTime<Utc>;
 pub type TimeDelta = chrono::TimeDelta;
@@ -145,6 +146,7 @@ pub struct Job {
     pub jnid: String,
     pub milestone_dates: MilestoneDates,
     pub status: Status,
+    pub status_mod_date: Timestamp,
     pub sales_rep: Option<String>,
     pub insurance_checkbox: bool,
     pub insurance_claim_number: Option<String>,
@@ -337,6 +339,8 @@ pub enum JobFromJsonError {
     JnidNotFound(serde_json::Map<String, serde_json::Value>),
     #[error("Expected a '{KEY_STATUS_NAME}' field in the JSON object")]
     StatusNotFound(serde_json::Map<String, serde_json::Value>),
+    #[error("Expected a '{KEY_STATUS_MOD_TIME}' field in the JSON object")]
+    StatusModTimeNotFound(serde_json::Map<String, serde_json::Value>),
 }
 
 impl TryFrom<serde_json::Value> for Job {
@@ -397,11 +401,15 @@ impl TryFrom<serde_json::Value> for Job {
         let contract_date = get_timestamp_nonzero(&map, KEY_CONTRACT_DATE);
         let install_date = get_timestamp_nonzero(&map, KEY_INSTALL_DATE);
         let loss_date = get_timestamp_nonzero(&map, KEY_LOSS_DATE);
+        let Some(status_mod_date) = get_timestamp_nonzero(&map, KEY_STATUS_MOD_TIME) else {
+            return Err(JobFromJsonError::StatusModTimeNotFound(map));
+        };
 
         Ok(Job {
             jnid,
             sales_rep,
             status,
+            status_mod_date,
             insurance_checkbox,
             insurance_company_name,
             insurance_claim_number,
@@ -442,6 +450,7 @@ mod test {
             jnid: "0".to_owned(),
             sales_rep: None,
             status: Status::JobsInProgress, // arbitrary choice that shouldn't matter for tests
+            status_mod_date: dt(0),
             insurance_checkbox: insurance,
             insurance_claim_number: if insurance { Some("123".to_owned()) } else { None },
             insurance_company_name: if insurance { Some("Gekko".to_owned()) } else { None },
@@ -658,6 +667,7 @@ mod test {
             jnid: "0".to_owned(),
             sales_rep: None,
             status: Status::JobsInProgress, // arbitrary; shouldn't affect tests
+            status_mod_date: dt(0),
             insurance_checkbox: false,
             insurance_claim_number: Some("123".to_owned()),
             insurance_company_name: Some("Gekko".to_owned()),

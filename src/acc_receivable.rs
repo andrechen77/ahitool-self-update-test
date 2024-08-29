@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use anyhow::Result;
+use chrono::Utc;
 
 use crate::{
     job_nimbus_api,
@@ -70,21 +71,36 @@ fn print_human(results: &Results) {
             let name = job.job_name.as_deref().unwrap_or("");
             let number = job.job_number.as_deref().unwrap_or("Unknown Job Number");
             let amount_receivable = job.amt_receivable as f64 / 100.0;
-            println!("        - {} (#{}): ${:.2}", name, number, amount_receivable);
+            let days_in_status = Utc::now().signed_duration_since(job.status_mod_date).num_days();
+            println!(
+                "        - {} (#{}): ${:.2} ({} days)",
+                name, number, amount_receivable, days_in_status
+            );
         }
     }
 }
 
 fn print_csv(results: &Results) {
     let mut writer = csv::Writer::from_writer(std::io::stdout());
-    writer.write_record(&["Job Name", "Job Number", "Job Status", "Amount"]).unwrap();
+    writer
+        .write_record(&["Job Name", "Job Number", "Job Status", "Amount", "Days In Status"])
+        .unwrap();
     for (_status, (_category_total, jobs)) in &results.categorized_jobs {
         for job in jobs {
             let name = job.job_name.as_deref().unwrap_or("");
             let number = job.job_number.as_deref().unwrap_or("Unknown Job Number");
             let status = format!("{}", job.status);
             let amount_receivable = (job.amt_receivable as f64) / 100.0;
-            writer.write_record(&[name, number, &status, &amount_receivable.to_string()]).unwrap();
+            let days_in_status = Utc::now().signed_duration_since(job.status_mod_date).num_days();
+            writer
+                .write_record(&[
+                    name,
+                    number,
+                    &status,
+                    &amount_receivable.to_string(),
+                    &days_in_status.to_string(),
+                ])
+                .unwrap();
         }
     }
     writer.flush().unwrap();
