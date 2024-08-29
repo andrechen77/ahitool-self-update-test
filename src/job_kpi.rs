@@ -88,7 +88,7 @@ struct ProcessJobsResult {
     red_flags: HashMap<Option<String>, Vec<(Rc<AnalyzedJob>, JobAnalysisError)>>,
 }
 fn process_jobs(jobs: impl Iterator<Item = Job>, min_dt: Option<Timestamp>) -> ProcessJobsResult {
-    println!(
+    eprintln!(
         "Processing jobs settled after {}",
         min_dt.map(|dt| dt.to_string()).as_deref().unwrap_or("the beginning of time")
     );
