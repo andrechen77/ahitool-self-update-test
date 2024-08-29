@@ -77,7 +77,7 @@ fn print_human(results: &Results) {
 
 fn print_csv(results: &Results) {
     let mut writer = csv::Writer::from_writer(std::io::stdout());
-    writer.write_record(&["Job Name", "Job Number", "Job Status", "Amount Receivable"]).unwrap();
+    writer.write_record(&["Job Name", "Job Number", "Job Status", "Amount"]).unwrap();
     for (_status, (_category_total, jobs)) in &results.categorized_jobs {
         for job in jobs {
             let name = job.job_name.as_deref().unwrap_or("");
