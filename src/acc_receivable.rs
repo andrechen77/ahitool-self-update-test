@@ -29,6 +29,7 @@ const CATEGORIES_WE_CARE_ABOUT: &[Status] = &[
     Status::SubmitCoc,
     Status::PunchList,
     Status::JobCompleted,
+    Status::Collections,
 ];
 
 struct Results<'a> {

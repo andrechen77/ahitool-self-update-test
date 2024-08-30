@@ -104,6 +104,7 @@ pub enum Status {
     SubmitCoc,
     PunchList,
     JobCompleted,
+    Collections,
     Lost,
     Other(String),
 }
@@ -119,6 +120,7 @@ impl From<&str> for Status {
             "Submit COC & Proof of Completion" => Status::SubmitCoc,
             "Punch List" => Status::PunchList,
             "Job Completed" => Status::JobCompleted,
+            "Collections" => Status::Collections,
             "Lost" => Status::Lost,
             other => Status::Other(other.to_owned()),
         }
@@ -135,6 +137,7 @@ impl Display for Status {
             Status::SubmitCoc => write!(f, "Submit COC & Proof of Completion"),
             Status::PunchList => write!(f, "Punch List"),
             Status::JobCompleted => write!(f, "Job Completed"),
+            Status::Collections => write!(f, "Collections"),
             Status::Lost => write!(f, "Lost"),
             Status::Other(s) => write!(f, "{}", s),
         }
