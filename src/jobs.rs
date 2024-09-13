@@ -153,6 +153,8 @@ pub struct Job {
     pub sales_rep: Option<String>,
     pub insurance_checkbox: bool,
     pub insurance_claim_number: Option<String>,
+    // currently unused by anything, since having an insurance company name
+    // doesn't mean that the job is an insurance job.
     pub insurance_company_name: Option<String>,
     pub job_number: Option<String>,
     pub job_name: Option<String>,
@@ -222,7 +224,7 @@ impl JobAnalysis {
 pub enum JobAnalysisError {
     #[error("This job has signed a contingency form, but is not an insurance job.")]
     ContingencyWithoutInsurance,
-    #[error("This job's insurance checkbox isn't checked, but it has an insurance company name and/or claim number.")]
+    #[error("This job's insurance checkbox isn't checked, but it has an insurance claim number.")]
     InconsistentInsuranceInfo,
     #[error("The date for {} does not follow previous dates.", .0.map(|stage| stage.to_string()).unwrap_or("Job Lost".to_owned()))]
     OutOfOrderDates(Option<Milestone>),
@@ -242,10 +244,12 @@ pub fn analyze_job(job: Job) -> (AnalyzedJob, Vec<JobAnalysisError>) {
         let mut kind = if job.insurance_checkbox {
             JobKind::InsuranceWithContingency
         } else {
-            if job.insurance_company_name.is_some() || job.insurance_claim_number.is_some() {
+            if job.insurance_claim_number.is_some() {
                 // in the case of existing insurance info but unchecked box, log the
                 // inconsistency and proceed as if it was an insurance job
-                errors.push(JobAnalysisError::InconsistentInsuranceInfo);
+
+                // TODO we might consider this an error in the future
+                // errors.push(JobAnalysisError::InconsistentInsuranceInfo);
                 JobKind::InsuranceWithContingency
             } else {
                 JobKind::Retail
