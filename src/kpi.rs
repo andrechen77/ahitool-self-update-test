@@ -1,3 +1,4 @@
+use std::fmt::Display;
 use std::{collections::HashMap, rc::Rc};
 
 use crate::job_nimbus_api;
@@ -38,13 +39,24 @@ pub struct Args {
     #[arg(long = "to", default_value = "today")]
     to_date: String,
 
+    /// The format in which to print the output. "human" will print a
+    /// human-readable report. "csv-folder" will write a set of CSV files
+    /// (either concatenated or in a directory), with one file per sales rep.
+    #[arg(long, value_enum, default_value = "human")]
+    format: OutputFormat,
+
     /// The file to write the output to. "-" will write to stdout.
     #[arg(short, default_value = "-")]
     output: String,
 }
 
+#[derive(Debug, clap::ValueEnum, Clone, Copy, Eq, PartialEq)]
+enum OutputFormat {
+    Human,
+}
+
 pub fn main(api_key: &str, args: Args) -> Result<()> {
-    let Args { filter_filename, from_date, to_date, output } = args;
+    let Args { filter_filename, from_date, to_date, format, output } = args;
     let filter = if let Some(filter_filename) = filter_filename {
         Some(std::fs::read_to_string(filter_filename)?)
     } else {
@@ -78,38 +90,55 @@ pub fn main(api_key: &str, args: Args) -> Result<()> {
         ),
     };
 
-    let ProcessJobsResult { global_tracker, rep_specific_trackers, red_flags } =
+    let ProcessJobsResult { trackers, red_flags } =
         process_jobs(jobs.into_iter(), (from_date, to_date));
-    let global_tracker_stats = calculate_job_tracker_stats(&global_tracker);
-    let rep_tracker_stats = rep_specific_trackers
+    let tracker_stats = trackers
         .into_iter()
         .map(|(rep, tracker)| (rep, calculate_job_tracker_stats(&tracker)))
         .collect::<HashMap<_, _>>();
 
-    let mut output_writer: Box<dyn std::io::Write> = match output.as_str() {
-        "-" => Box::new(std::io::stdout()),
-        path => Box::new(std::fs::File::create(path)?),
-    };
+    // a function that takes the name of a sales rep (or `None` to represent
+    // global stats) and returns a writer to which to write the stats for that
+    // sales rep
+    let get_output_writer: Box<dyn Fn(&TrackerTargetKind, &str) -> Box<dyn std::io::Write>> =
+        match output.as_str() {
+            "-" => Box::new(|_sales_rep, _addendum| Box::new(std::io::stdout())),
+            path => {
+                // create a directory with the name of the path
+                std::fs::create_dir_all(path)?;
 
-    writeln!(
-        output_writer,
-        "Global Tracker: ================\n{}",
-        format_job_tracker_stats(&global_tracker_stats)
-    )?;
-    for (rep, stats) in rep_tracker_stats {
+                let file_ext = match format {
+                    OutputFormat::Human => "txt",
+                };
+
+                Box::new(move |sales_rep, addendum| {
+                    let path = match sales_rep {
+                        TrackerTargetKind::Global => {
+                            format!("{}/global-{}.{}", path, addendum, file_ext)
+                        }
+                        TrackerTargetKind::SalesRep(name) => {
+                            format!("{}/rep-{}-{}.{}", path, name, addendum, file_ext)
+                        }
+                        TrackerTargetKind::UnknownSalesRep => {
+                            format!("{}/unknownrep-{}.{}", path, addendum, file_ext)
+                        }
+                    };
+                    Box::new(std::fs::File::create(path).expect("the directory should exist"))
+                })
+            }
+        };
+
+    for (rep, stats) in tracker_stats {
         writeln!(
-            output_writer,
-            "\nTracker for {}: ================\n{}",
-            rep.unwrap_or("Unknown Sales Rep".to_owned()),
+            get_output_writer(&rep, "stats"),
+            "Tracker for {}: ================\n{}",
+            rep,
             format_job_tracker_stats(&stats)
         )?;
     }
     for (rep, red_flags) in red_flags {
-        writeln!(
-            output_writer,
-            "\nRed flags for {}: ===============",
-            rep.unwrap_or("Unknown Sales Rep".to_owned())
-        )?;
+        let mut output_writer = get_output_writer(&rep, "flags");
+        writeln!(&mut output_writer, "\nRed flags for {}: ===============", rep,)?;
         for (job, err) in red_flags {
             writeln!(
                 output_writer,
@@ -123,10 +152,25 @@ pub fn main(api_key: &str, args: Args) -> Result<()> {
     Ok(())
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum TrackerTargetKind {
+    Global,
+    SalesRep(String),
+    UnknownSalesRep,
+}
+impl Display for TrackerTargetKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TrackerTargetKind::Global => write!(f, "Global"),
+            TrackerTargetKind::SalesRep(name) => write!(f, "Sales Rep {}", name),
+            TrackerTargetKind::UnknownSalesRep => write!(f, "Unknown Sales Rep"),
+        }
+    }
+}
+
 struct ProcessJobsResult {
-    global_tracker: JobTracker3x5,
-    rep_specific_trackers: HashMap<Option<String>, JobTracker3x5>,
-    red_flags: HashMap<Option<String>, Vec<(Rc<AnalyzedJob>, JobAnalysisError)>>,
+    trackers: HashMap<TrackerTargetKind, JobTracker3x5>,
+    red_flags: HashMap<TrackerTargetKind, Vec<(Rc<AnalyzedJob>, JobAnalysisError)>>,
 }
 fn process_jobs(
     jobs: impl Iterator<Item = Job>,
@@ -138,12 +182,15 @@ fn process_jobs(
         to_dt.map(|dt| dt.to_string()).as_deref().unwrap_or("the end of time")
     );
 
-    let mut global_tracker = build_job_tracker();
-    let mut rep_specific_trackers = HashMap::new();
+    let mut trackers = HashMap::new();
     let mut red_flags = HashMap::new();
     for job in jobs {
         let (analyzed, errors) = jobs::analyze_job(job);
         let analyzed = Rc::new(analyzed);
+        let target = match analyzed.job.sales_rep.clone() {
+            Some(name) => TrackerTargetKind::SalesRep(name),
+            None => TrackerTargetKind::UnknownSalesRep,
+        };
         if let AnalyzedJob { analysis: Some(analysis), .. } = analyzed.as_ref() {
             // only add jobs that were settled
             if let Some(date_settled) = analysis.date_settled() {
@@ -152,27 +199,26 @@ fn process_jobs(
                     && (to_dt.is_none() || date_settled <= to_dt.unwrap())
                 {
                     let kind = analysis.kind.into_int();
-                    global_tracker.add_job(
+                    trackers
+                        .entry(TrackerTargetKind::Global)
+                        .or_insert_with(build_job_tracker)
+                        .add_job(&analyzed, kind, &analysis.timestamps, analysis.loss_timestamp);
+                    trackers.entry(target.clone()).or_insert_with(build_job_tracker).add_job(
                         &analyzed,
                         kind,
                         &analysis.timestamps,
                         analysis.loss_timestamp,
                     );
-                    rep_specific_trackers
-                        .entry(analyzed.job.sales_rep.clone())
-                        .or_insert_with(build_job_tracker)
-                        .add_job(&analyzed, kind, &analysis.timestamps, analysis.loss_timestamp);
                 }
             }
         }
-        let sales_rep_errors: &mut Vec<_> =
-            red_flags.entry(analyzed.job.sales_rep.clone()).or_default();
+        let sales_rep_errors: &mut Vec<_> = red_flags.entry(target).or_default();
         for error in errors {
             sales_rep_errors.push((analyzed.clone(), error));
         }
     }
 
-    ProcessJobsResult { global_tracker, rep_specific_trackers, red_flags }
+    ProcessJobsResult { trackers, red_flags }
 }
 
 type JobTracker3x5 =
