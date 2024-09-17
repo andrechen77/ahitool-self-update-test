@@ -1,4 +1,5 @@
 use std::fmt::Display;
+use std::io::Write;
 use std::{collections::HashMap, rc::Rc};
 
 use crate::job_nimbus_api;
@@ -53,6 +54,7 @@ pub struct Args {
 #[derive(Debug, clap::ValueEnum, Clone, Copy, Eq, PartialEq)]
 enum OutputFormat {
     Human,
+    Csv,
 }
 
 pub fn main(api_key: &str, args: Args) -> Result<()> {
@@ -97,48 +99,58 @@ pub fn main(api_key: &str, args: Args) -> Result<()> {
         .map(|(rep, tracker)| (rep, calculate_job_tracker_stats(&tracker)))
         .collect::<HashMap<_, _>>();
 
+    #[derive(PartialEq, Eq)]
+    enum StatsOrFlags {
+        Stats,
+        Flags,
+    }
     // a function that takes the name of a sales rep (or `None` to represent
     // global stats) and returns a writer to which to write the stats for that
     // sales rep
-    let get_output_writer: Box<dyn Fn(&TrackerTargetKind, &str) -> Box<dyn std::io::Write>> =
-        match output.as_str() {
-            "-" => Box::new(|_sales_rep, _addendum| Box::new(std::io::stdout())),
-            path => {
-                // create a directory with the name of the path
-                std::fs::create_dir_all(path)?;
+    let get_output_writer: Box<
+        dyn Fn(&TrackerTargetKind, StatsOrFlags) -> Box<dyn std::io::Write>,
+    > = match output.as_str() {
+        "-" => Box::new(|_, _| Box::new(std::io::stdout())),
+        path => {
+            // create a directory with the name of the path
+            std::fs::create_dir_all(path)?;
 
-                let file_ext = match format {
-                    OutputFormat::Human => "txt",
+            Box::new(move |sales_rep, stats_or_flags| {
+                let name = match sales_rep {
+                    TrackerTargetKind::Global => format!("global"),
+                    TrackerTargetKind::SalesRep(name) => format!("rep-{}", name),
+                    TrackerTargetKind::UnknownSalesRep => format!("unknownrep"),
                 };
 
-                Box::new(move |sales_rep, addendum| {
-                    let path = match sales_rep {
-                        TrackerTargetKind::Global => {
-                            format!("{}/global-{}.{}", path, addendum, file_ext)
-                        }
-                        TrackerTargetKind::SalesRep(name) => {
-                            format!("{}/rep-{}-{}.{}", path, name, addendum, file_ext)
-                        }
-                        TrackerTargetKind::UnknownSalesRep => {
-                            format!("{}/unknownrep-{}.{}", path, addendum, file_ext)
-                        }
-                    };
-                    Box::new(std::fs::File::create(path).expect("the directory should exist"))
-                })
-            }
-        };
+                let path = if stats_or_flags == StatsOrFlags::Flags {
+                    format!("{}/{}-flags.txt", path, name)
+                } else {
+                    match format {
+                        OutputFormat::Human => format!("{}/{}-stats.txt", path, name),
+                        OutputFormat::Csv => format!("{}/{}-stats.csv", path, name),
+                    }
+                };
+
+                Box::new(std::fs::File::create(path).expect("the directory should exist"))
+            })
+        }
+    };
 
     for (rep, stats) in tracker_stats {
-        writeln!(
-            get_output_writer(&rep, "stats"),
-            "Tracker for {}: ================\n{}",
-            rep,
-            format_job_tracker_stats(&stats)
-        )?;
+        let mut output_writer = get_output_writer(&rep, StatsOrFlags::Stats);
+        match format {
+            OutputFormat::Human => {
+                writeln!(&mut output_writer, "Tracker for {}: ================", rep)?;
+                write_job_tracker_stats_human(&mut output_writer, &stats)?;
+            }
+            OutputFormat::Csv => {
+                write_job_tracker_stats_csv(&mut output_writer, &stats)?;
+            }
+        };
     }
     for (rep, red_flags) in red_flags {
-        let mut output_writer = get_output_writer(&rep, "flags");
-        writeln!(&mut output_writer, "\nRed flags for {}: ===============", rep,)?;
+        let mut output_writer = get_output_writer(&rep, StatsOrFlags::Flags);
+        writeln!(&mut output_writer, "Red flags for {}: ===============", rep)?;
         for (job, err) in red_flags {
             writeln!(
                 output_writer,
@@ -147,6 +159,7 @@ pub fn main(api_key: &str, args: Args) -> Result<()> {
                 err
             )?;
         }
+        writeln!(&mut output_writer, "")?;
     }
 
     Ok(())
@@ -342,8 +355,24 @@ fn calculate_job_tracker_stats(tracker: &JobTracker3x5) -> JobTrackerStats {
     }
 }
 
-#[rustfmt::skip] // for the big format! at the end
-fn format_job_tracker_stats(tracker_stats: &JobTrackerStats) -> String {
+fn into_days(time: TimeDelta) -> f64 {
+    const SECONDS_PER_DAY: f64 = 86400.0;
+    time.num_seconds() as f64 / SECONDS_PER_DAY
+}
+fn percent_or_na(rate: Option<f64>) -> String {
+    rate.map(|r| format!("{:6.2}%", r * 100.0)).unwrap_or_else(|| "    N/A".to_owned())
+}
+fn into_list_of_job_nums(jobs: &[Rc<AnalyzedJob>]) -> String {
+    jobs.iter()
+        .map(|job| job.job.job_number.as_deref().unwrap_or_else(|| &job.job.jnid))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn write_job_tracker_stats_human(
+    writer: &mut impl Write,
+    tracker_stats: &JobTrackerStats,
+) -> std::io::Result<()> {
     let JobTrackerStats {
         appt_count,
         install_count,
@@ -356,20 +385,7 @@ fn format_job_tracker_stats(tracker_stats: &JobTrackerStats) -> String {
         install_retail_conv,
     } = tracker_stats;
 
-    fn into_days(time: TimeDelta) -> f64 {
-        const SECONDS_PER_DAY: f64 = 86400.0;
-        time.num_seconds() as f64 / SECONDS_PER_DAY
-    }
-    fn percent_or_na(rate: Option<f64>) -> String {
-        rate.map(|r| format!("{:6.2}%", r * 100.0)).unwrap_or_else(|| "    N/A".to_owned())
-    }
-    fn into_list_of_job_nums(jobs: &[Rc<AnalyzedJob>]) -> String {
-        jobs.iter().map(|job| job.job.job_number.as_deref().unwrap_or_else(|| &job.job.jnid)).collect::<Vec<_>>().join(", ")
-    }
-
-    let mut result = String::new();
-    use std::fmt::Write as _;
-    writeln!(&mut result, "Appts {} | Installed {}", appt_count, install_count).unwrap();
+    writeln!(writer, "Appts {} | Installed {}", appt_count, install_count)?;
     for (name, conv_stats) in [
         ("All Losses", loss_conv),
         ("(I) Appt to Contingency", appt_continge_conv),
@@ -380,14 +396,49 @@ fn format_job_tracker_stats(tracker_stats: &JobTrackerStats) -> String {
         ("(R) Contract to Installation", install_retail_conv),
     ] {
         writeln!(
-            &mut result,
+            writer,
             "{:30}    Rate {} | Total {:2} | Avg Time {:.2} days\n    {}",
             name,
             percent_or_na(conv_stats.conversion_rate),
             conv_stats.achieved.len(),
             into_days(conv_stats.average_time_to_achieve),
             into_list_of_job_nums(&conv_stats.achieved),
-        ).unwrap();
+        )?;
     }
-    result
+
+    Ok(())
+}
+
+fn write_job_tracker_stats_csv(
+    writer: &mut impl Write,
+    stats: &JobTrackerStats,
+) -> std::io::Result<()> {
+    let mut csv_writer = csv::Writer::from_writer(writer);
+    csv_writer.write_record(&["Conversion", "Rate", "Total", "Avg Time (days)", "Jobs"])?;
+    for (name, conv_stats) in [
+        ("All Losses", &stats.loss_conv),
+        ("(I) Appt to Contingency", &stats.appt_continge_conv),
+        ("(I) Appt to Contract", &stats.appt_contract_insure_conv),
+        ("(I) Contingency to Contract", &stats.continge_contract_conv),
+        ("(R) Appt to Contract", &stats.appt_contract_retail_conv),
+        ("(I) Contract to Installation", &stats.install_insure_conv),
+        ("(R) Contract to Installation", &stats.install_retail_conv),
+    ] {
+        csv_writer.write_record(&[
+            name,
+            &percent_or_na(conv_stats.conversion_rate),
+            &conv_stats.achieved.len().to_string(),
+            &into_days(conv_stats.average_time_to_achieve).to_string(),
+            &into_list_of_job_nums(&conv_stats.achieved),
+        ])?;
+    }
+    csv_writer.write_record(&[
+        "Appts",
+        &stats.appt_count.to_string(),
+        "",
+        "Installed",
+        &stats.install_count.to_string(),
+    ])?;
+
+    Ok(())
 }
