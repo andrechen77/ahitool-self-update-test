@@ -24,16 +24,23 @@ pub struct Args {
 
     /// The minimum date to filter jobs by. The final report will only include
     /// jobs where the date that they were settled (date of install or date of
-    /// loss) after the minimum date. Valid options are a number (indicating a
-    /// number of days before the current date), a date of the form
-    /// "%Y-%m-%d", "ytd" (indicating the start of the current year), or
-    /// "forever" to include all jobs.
-    #[arg(short, long = "min-date", default_value = "forever")]
-    min_date: String,
+    /// loss) is after the minimum date. Valid options are a date of the form
+    /// "%Y-%m-%d", "ytd" (indicating the start of the current year), "today"
+    /// (indicating the current date), or "forever" (indicating the beginning of
+    /// time).
+    #[arg(long = "from", default_value = "forever")]
+    from_date: String,
+    /// The maximum date to filter jobs by. The final report will only include
+    /// jobs where the date that they were settled (date of install or date of
+    /// loss) is before the maximum date. Valid options are a date of the form
+    /// "%Y-%m-%d", "today" (indicating the current date), or "forever"
+    /// (indicating the end of time).
+    #[arg(long = "to", default_value = "today")]
+    to_date: String,
 }
 
 pub fn main(api_key: &str, args: Args) -> Result<()> {
-    let Args { filter_filename, min_date } = args;
+    let Args { filter_filename, from_date, to_date } = args;
     let filter = if let Some(filter_filename) = filter_filename {
         Some(std::fs::read_to_string(filter_filename)?)
     } else {
@@ -41,7 +48,7 @@ pub fn main(api_key: &str, args: Args) -> Result<()> {
     };
     let jobs = job_nimbus_api::get_all_jobs_from_job_nimbus(&api_key, filter.as_deref())?;
 
-    let min_date = match min_date.as_str() {
+    let from_date = match from_date.as_str() {
         "forever" => None,
         "ytd" => Some(
             Utc.from_utc_datetime(&NaiveDateTime::new(
@@ -50,15 +57,25 @@ pub fn main(api_key: &str, args: Args) -> Result<()> {
                 NaiveTime::MIN,
             )),
         ),
+        "today" => Some(Utc::now()),
         date_string => Some(
             NaiveDate::parse_from_str(date_string, "%Y-%m-%d")
                 .map(|date| Utc.from_utc_datetime(&NaiveDateTime::new(date, NaiveTime::MIN)))
-                .context("Invalid date format. Use 'forever', 'ytd', or '%Y-%m-%d'.")?,
+                .context("Invalid date format. Use 'forever', 'ytd', 'today', or '%Y-%m-%d'.")?,
+        ),
+    };
+    let to_date = match to_date.as_str() {
+        "forever" => None,
+        "today" => Some(Utc::now()),
+        date_string => Some(
+            NaiveDate::parse_from_str(date_string, "%Y-%m-%d")
+                .map(|date| Utc.from_utc_datetime(&NaiveDateTime::new(date, NaiveTime::MIN)))
+                .context("Invalid date format. Use 'forever', 'ytd', 'today', or '%Y-%m-%d'.")?,
         ),
     };
 
     let ProcessJobsResult { global_tracker, rep_specific_trackers, red_flags } =
-        process_jobs(jobs.into_iter(), min_date);
+        process_jobs(jobs.into_iter(), (from_date, to_date));
 
     println!("\nGlobal Tracker: ================");
     println!("{}", format_job_tracker_results(&global_tracker));
@@ -87,10 +104,14 @@ struct ProcessJobsResult {
     rep_specific_trackers: HashMap<Option<String>, JobTracker3x5>,
     red_flags: HashMap<Option<String>, Vec<(Rc<AnalyzedJob>, JobAnalysisError)>>,
 }
-fn process_jobs(jobs: impl Iterator<Item = Job>, min_dt: Option<Timestamp>) -> ProcessJobsResult {
+fn process_jobs(
+    jobs: impl Iterator<Item = Job>,
+    (from_dt, to_dt): (Option<Timestamp>, Option<Timestamp>),
+) -> ProcessJobsResult {
     eprintln!(
-        "Processing jobs settled after {}",
-        min_dt.map(|dt| dt.to_string()).as_deref().unwrap_or("the beginning of time")
+        "Processing jobs settled between {} and {}",
+        from_dt.map(|dt| dt.to_string()).as_deref().unwrap_or("the beginning of time"),
+        to_dt.map(|dt| dt.to_string()).as_deref().unwrap_or("the end of time")
     );
 
     let mut global_tracker = build_job_tracker();
@@ -100,9 +121,12 @@ fn process_jobs(jobs: impl Iterator<Item = Job>, min_dt: Option<Timestamp>) -> P
         let (analyzed, errors) = jobs::analyze_job(job);
         let analyzed = Rc::new(analyzed);
         if let AnalyzedJob { analysis: Some(analysis), .. } = analyzed.as_ref() {
-            // only add jobs that were settled, and after the min date too
+            // only add jobs that were settled
             if let Some(date_settled) = analysis.date_settled() {
-                if min_dt.is_none() || date_settled >= min_dt.unwrap() {
+                // only add jobs that were settled within the date range
+                if (from_dt.is_none() || date_settled >= from_dt.unwrap())
+                    && (to_dt.is_none() || date_settled <= to_dt.unwrap())
+                {
                     let kind = analysis.kind.into_int();
                     global_tracker.add_job(
                         &analyzed,
