@@ -154,7 +154,7 @@ impl<const M: usize, const N: usize, J: Clone + PartialEq> JobTracker<M, N, J> {
             total_time_to_achieve / num_total.try_into().unwrap()
         };
 
-        CalcStatsResult { total, conversion_rate, average_time_to_achieve }
+        CalcStatsResult { achieved: total, conversion_rate, average_time_to_achieve }
     }
 
     /// Considering all jobs, collects all losses and the average time it took
@@ -197,7 +197,7 @@ impl<const M: usize, const N: usize, J: Clone + PartialEq> JobTracker<M, N, J> {
 #[derive(Debug, PartialEq, Clone)]
 pub struct CalcStatsResult<J> {
     /// All jobs in the set.
-    pub total: Vec<J>,
+    pub achieved: Vec<J>,
     /// The rate of conversion into the given set; i.e. the total number of jobs
     /// in the set divided by the total number of jobs that are either in the
     /// set or were one milestone away from reaching the set. This is None if
@@ -268,7 +268,7 @@ mod test {
         assert_eq!(
             tracker.calc_stats(0, &[0, 1, 2]),
             CalcStatsResult {
-                total: vec![(); 80 + 40 + 20],
+                achieved: vec![(); 80 + 40 + 20],
                 conversion_rate: Some(1.0),
                 average_time_to_achieve: tu * 3 / (80 + 40 + 20),
             }
@@ -276,7 +276,7 @@ mod test {
         assert_eq!(
             tracker.calc_stats(1, &[0, 1, 2]),
             CalcStatsResult {
-                total: vec![(); 70 + 35 + 17],
+                achieved: vec![(); 70 + 35 + 17],
                 conversion_rate: Some((70 + 35 + 17) as f64 / (80 + 40 + 20) as f64),
                 average_time_to_achieve: tu * 3 / (70 + 35 + 17),
             }
@@ -284,7 +284,7 @@ mod test {
         assert_eq!(
             tracker.calc_stats(2, &[0]),
             CalcStatsResult {
-                total: vec![(); 60],
+                achieved: vec![(); 60],
                 conversion_rate: Some(60.0 / 70.0),
                 average_time_to_achieve: tu / 60,
             }
@@ -292,7 +292,7 @@ mod test {
         assert_eq!(
             tracker.calc_stats(3, &[0, 1]),
             CalcStatsResult {
-                total: vec![(); 50 + 25],
+                achieved: vec![(); 50 + 25],
                 conversion_rate: Some((50 + 25) as f64 / (60 + 35) as f64),
                 average_time_to_achieve: tu * 2 / (50 + 25),
             }
@@ -300,7 +300,7 @@ mod test {
         assert_eq!(
             tracker.calc_stats(3, &[2]),
             CalcStatsResult {
-                total: vec![(); 12],
+                achieved: vec![(); 12],
                 conversion_rate: Some(12.0 / 17.0),
                 average_time_to_achieve: tu / 12,
             }

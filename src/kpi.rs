@@ -37,10 +37,14 @@ pub struct Args {
     /// (indicating the end of time).
     #[arg(long = "to", default_value = "today")]
     to_date: String,
+
+    /// The file to write the output to. "-" will write to stdout.
+    #[arg(short, default_value = "-")]
+    output: String,
 }
 
 pub fn main(api_key: &str, args: Args) -> Result<()> {
-    let Args { filter_filename, from_date, to_date } = args;
+    let Args { filter_filename, from_date, to_date, output } = args;
     let filter = if let Some(filter_filename) = filter_filename {
         Some(std::fs::read_to_string(filter_filename)?)
     } else {
@@ -76,23 +80,43 @@ pub fn main(api_key: &str, args: Args) -> Result<()> {
 
     let ProcessJobsResult { global_tracker, rep_specific_trackers, red_flags } =
         process_jobs(jobs.into_iter(), (from_date, to_date));
+    let global_tracker_stats = calculate_job_tracker_stats(&global_tracker);
+    let rep_tracker_stats = rep_specific_trackers
+        .into_iter()
+        .map(|(rep, tracker)| (rep, calculate_job_tracker_stats(&tracker)))
+        .collect::<HashMap<_, _>>();
 
-    println!("\nGlobal Tracker: ================");
-    println!("{}", format_job_tracker_results(&global_tracker));
-    for (rep, tracker) in rep_specific_trackers {
-        println!(
-            "\nTracker for {}: =================",
-            rep.unwrap_or("Unknown Sales Rep".to_owned())
-        );
-        println!("{}", format_job_tracker_results(&tracker));
+    let mut output_writer: Box<dyn std::io::Write> = match output.as_str() {
+        "-" => Box::new(std::io::stdout()),
+        path => Box::new(std::fs::File::create(path)?),
+    };
+
+    writeln!(
+        output_writer,
+        "Global Tracker: ================\n{}",
+        format_job_tracker_stats(&global_tracker_stats)
+    )?;
+    for (rep, stats) in rep_tracker_stats {
+        writeln!(
+            output_writer,
+            "\nTracker for {}: ================\n{}",
+            rep.unwrap_or("Unknown Sales Rep".to_owned()),
+            format_job_tracker_stats(&stats)
+        )?;
     }
     for (rep, red_flags) in red_flags {
-        println!(
+        writeln!(
+            output_writer,
             "\nRed flags for {}: ===============",
             rep.unwrap_or("Unknown Sales Rep".to_owned())
-        );
+        )?;
         for (job, err) in red_flags {
-            println!("{}: {}", job.job.job_number.as_deref().unwrap_or("unknown job #"), err);
+            writeln!(
+                output_writer,
+                "{}: {}",
+                job.job.job_number.as_deref().unwrap_or("unknown job #"),
+                err
+            )?;
         }
     }
 
@@ -162,65 +186,129 @@ fn build_job_tracker() -> JobTracker3x5 {
     ])
 }
 
-#[rustfmt::skip] // for the big format! at the end
-fn format_job_tracker_results(tracker: &JobTracker3x5) -> String {
+struct JobTrackerStats {
+    appt_count: usize,
+    install_count: usize,
+    loss_conv: ConversionStats,
+    appt_continge_conv: ConversionStats,
+    appt_contract_insure_conv: ConversionStats,
+    continge_contract_conv: ConversionStats,
+    appt_contract_retail_conv: ConversionStats,
+    install_insure_conv: ConversionStats,
+    install_retail_conv: ConversionStats,
+}
+
+struct ConversionStats {
+    /// All the jobs that made the conversion.
+    achieved: Vec<Rc<AnalyzedJob>>,
+    /// The rate of conversion. `None` if no jobs made the conversion.
+    conversion_rate: Option<f64>,
+    /// The average amount of time for a successful conversion. Zero if no
+    /// jobs made the conversion.
+    average_time_to_achieve: TimeDelta,
+}
+
+fn calculate_job_tracker_stats(tracker: &JobTracker3x5) -> JobTrackerStats {
     let iwc = JobKind::InsuranceWithContingency.into_int(); // "insurance with contingency"
     let iwo = JobKind::InsuranceWithoutContingency.into_int(); // "insurance without contingency"
     let ret = JobKind::Retail.into_int(); // "retail"
 
     // some basic stats
-    let num_appts = tracker.calc_stats(Milestone::AppointmentMade.into_int(), &[iwc, iwo, ret]).total.len();
-    let num_installs = tracker.calc_stats(Milestone::Installed.into_int(), &[iwc, iwo, ret]).total.len();
-    let (losses, avg_loss_time) = tracker.calc_stats_of_loss();
-    let loss_rate = if num_appts == 0 { None } else { Some(losses.len() as f64 / num_appts as f64) };
+    let appt_count =
+        tracker.calc_stats(Milestone::AppointmentMade.into_int(), &[iwc, iwo, ret]).achieved.len();
+    let install_count =
+        tracker.calc_stats(Milestone::Installed.into_int(), &[iwc, iwo, ret]).achieved.len();
 
-    let num_insure_appts = tracker.calc_stats(Milestone::AppointmentMade.into_int(), &[iwc, iwo]).total.len();
-
-    // from appt to contingency (insurance)
-    let (appt_continge_total, appt_continge_conv, appt_continge_time) = {
-        let job_tracker::Bucket { achieved, cum_achieve_time, .. } = tracker.get_bucket(iwc, Milestone::ContingencySigned.into_int()).unwrap();
-        let num_achieved = achieved.len();
-        let rate = if num_insure_appts == 0 { None } else { Some(num_achieved as f64 / num_insure_appts as f64) };
-        let time = if num_achieved == 0 { TimeDelta::zero() } else { *cum_achieve_time / num_achieved.try_into().unwrap() };
-        (achieved, rate, time)
+    let loss_conv = {
+        let (achieved, average_time_to_achieve) = tracker.calc_stats_of_loss();
+        let conversion_rate =
+            if appt_count == 0 { None } else { Some(achieved.len() as f64 / appt_count as f64) };
+        ConversionStats { achieved, conversion_rate, average_time_to_achieve }
     };
 
-    // from appt to contract (insurance)
-    let (appt_contract_insure_total, appt_contract_insure_conv, appt_contract_insure_time) = {
-        let job_tracker::Bucket { achieved, cum_achieve_time, .. } = tracker.get_bucket(iwo, Milestone::ContractSigned.into_int()).unwrap();
+    let num_insure_appts =
+        tracker.calc_stats(Milestone::AppointmentMade.into_int(), &[iwc, iwo]).achieved.len();
+
+    // calculate stats for each conversion
+    let appt_continge_conv = {
+        let job_tracker::Bucket { achieved, cum_achieve_time, .. } =
+            tracker.get_bucket(iwc, Milestone::ContingencySigned.into_int()).unwrap();
         let num_achieved = achieved.len();
-        let rate = if num_insure_appts == 0 { None } else { Some(num_achieved as f64 / num_insure_appts as f64) };
-        let time = if num_achieved == 0 { TimeDelta::zero() } else { *cum_achieve_time / num_achieved.try_into().unwrap() };
-        (achieved, rate, time)
+        let conversion_rate = if num_insure_appts == 0 {
+            None
+        } else {
+            Some(num_achieved as f64 / num_insure_appts as f64)
+        };
+        let average_time_to_achieve = if num_achieved == 0 {
+            TimeDelta::zero()
+        } else {
+            *cum_achieve_time / num_achieved.try_into().unwrap()
+        };
+        ConversionStats { achieved: achieved.clone(), conversion_rate, average_time_to_achieve }
+    };
+    let appt_contract_insure_conv = {
+        let job_tracker::Bucket { achieved, cum_achieve_time, .. } =
+            tracker.get_bucket(iwo, Milestone::ContractSigned.into_int()).unwrap();
+        let num_achieved = achieved.len();
+        let conversion_rate = if num_insure_appts == 0 {
+            None
+        } else {
+            Some(num_achieved as f64 / num_insure_appts as f64)
+        };
+        let average_time_to_achieve = if num_achieved == 0 {
+            TimeDelta::zero()
+        } else {
+            *cum_achieve_time / num_achieved.try_into().unwrap()
+        };
+        ConversionStats { achieved: achieved.clone(), conversion_rate, average_time_to_achieve }
+    };
+    let continge_contract_conv = {
+        let CalcStatsResult { achieved, conversion_rate, average_time_to_achieve } =
+            tracker.calc_stats(Milestone::ContractSigned.into_int(), &[iwc]);
+        ConversionStats { achieved, conversion_rate, average_time_to_achieve }
+    };
+    let appt_contract_retail_conv = {
+        let CalcStatsResult { achieved, conversion_rate, average_time_to_achieve } =
+            tracker.calc_stats(Milestone::ContractSigned.into_int(), &[ret]);
+        ConversionStats { achieved, conversion_rate, average_time_to_achieve }
+    };
+    let install_insure_conv = {
+        let CalcStatsResult { achieved, conversion_rate, average_time_to_achieve } =
+            tracker.calc_stats(Milestone::Installed.into_int(), &[iwc, iwo]);
+        ConversionStats { achieved, conversion_rate, average_time_to_achieve }
+    };
+    let install_retail_conv = {
+        let CalcStatsResult { achieved, conversion_rate, average_time_to_achieve } =
+            tracker.calc_stats(Milestone::Installed.into_int(), &[ret]);
+        ConversionStats { achieved, conversion_rate, average_time_to_achieve }
     };
 
-    // from contingency to contract (insurance)
-    let CalcStatsResult {
-        total: continge_contract_total,
-        conversion_rate: continge_contract_conv,
-        average_time_to_achieve: continge_contract_time,
-    } = tracker.calc_stats(Milestone::ContractSigned.into_int(), &[iwc]);
+    JobTrackerStats {
+        appt_count,
+        install_count,
+        loss_conv,
+        appt_continge_conv,
+        appt_contract_insure_conv,
+        continge_contract_conv,
+        appt_contract_retail_conv,
+        install_insure_conv,
+        install_retail_conv,
+    }
+}
 
-    // from appointment to contract (retail)
-    let CalcStatsResult {
-        total: appt_contract_retail_total,
-        conversion_rate: appt_contract_retail_conv,
-        average_time_to_achieve: appt_contract_retail_time,
-    } = tracker.calc_stats(Milestone::ContractSigned.into_int(), &[ret]);
-
-    // from contract to install (insurance)
-    let CalcStatsResult {
-        total: install_insure_total,
-        conversion_rate: install_insure_conv,
-        average_time_to_achieve: install_insure_time,
-    } = tracker.calc_stats(Milestone::Installed.into_int(), &[iwc, iwo]);
-
-    // from contract to install (insurance)
-    let CalcStatsResult {
-        total: install_retail_total,
-        conversion_rate: install_retail_conv,
-        average_time_to_achieve: install_retail_time,
-    } = tracker.calc_stats(Milestone::Installed.into_int(), &[ret]);
+#[rustfmt::skip] // for the big format! at the end
+fn format_job_tracker_stats(tracker_stats: &JobTrackerStats) -> String {
+    let JobTrackerStats {
+        appt_count,
+        install_count,
+        loss_conv,
+        appt_continge_conv,
+        appt_contract_insure_conv,
+        continge_contract_conv,
+        appt_contract_retail_conv,
+        install_insure_conv,
+        install_retail_conv,
+    } = tracker_stats;
 
     fn into_days(time: TimeDelta) -> f64 {
         const SECONDS_PER_DAY: f64 = 86400.0;
@@ -233,36 +321,27 @@ fn format_job_tracker_results(tracker: &JobTracker3x5) -> String {
         jobs.iter().map(|job| job.job.job_number.as_deref().unwrap_or_else(|| &job.job.jnid)).collect::<Vec<_>>().join(", ")
     }
 
-    format!(
-        "Appts {} | Installed {}\n\
-        All Losses:                   Rate {} | Total {:2} | Avg Time {:.2} days\n\
-        -   {} \n\
-        (I) Appt to Contingency:      Rate {} | Total {:2} | Avg Time {:.2} days\n\
-        -   {} \n\
-        (I) Appt to Contract:         Rate {} | Total {:2} | Avg Time {:.2} days\n\
-        -   {} \n\
-        (I) Contingency to Contract:  Rate {} | Total {:2} | Avg Time {:.2} days\n\
-        -   {} \n\
-        (R) Appt to Contract:         Rate {} | Total {:2} | Avg Time {:.2} days\n\
-        -   {} \n\
-        (I) Contract to Installation: Rate {} | Total {:2} | Avg Time {:.2} days\n\
-        -   {} \n\
-        (R) Contract to Installation: Rate {} | Total {:2} | Avg Time {:.2} days\n\
-        -   {} \n",
-        num_appts, num_installs,
-        percent_or_na(loss_rate), losses.len(), into_days(avg_loss_time),
-        into_list_of_job_nums(&losses),
-        percent_or_na(appt_continge_conv), appt_continge_total.len(), into_days(appt_continge_time),
-        into_list_of_job_nums(&appt_continge_total),
-        percent_or_na(appt_contract_insure_conv), appt_contract_insure_total.len(), into_days(appt_contract_insure_time),
-        into_list_of_job_nums(&appt_contract_insure_total),
-        percent_or_na(continge_contract_conv), continge_contract_total.len(), into_days(continge_contract_time),
-        into_list_of_job_nums(&continge_contract_total),
-        percent_or_na(appt_contract_retail_conv), appt_contract_retail_total.len(), into_days(appt_contract_retail_time),
-        into_list_of_job_nums(&appt_contract_retail_total),
-        percent_or_na(install_insure_conv), install_insure_total.len(), into_days(install_insure_time),
-        into_list_of_job_nums(&install_insure_total),
-        percent_or_na(install_retail_conv), install_retail_total.len(), into_days(install_retail_time),
-        into_list_of_job_nums(&install_retail_total),
-    )
+    let mut result = String::new();
+    use std::fmt::Write as _;
+    writeln!(&mut result, "Appts {} | Installed {}", appt_count, install_count).unwrap();
+    for (name, conv_stats) in [
+        ("All Losses", loss_conv),
+        ("(I) Appt to Contingency", appt_continge_conv),
+        ("(I) Appt to Contract", appt_contract_insure_conv),
+        ("(I) Contingency to Contract", continge_contract_conv),
+        ("(R) Appt to Contract", appt_contract_retail_conv),
+        ("(I) Contract to Installation", install_insure_conv),
+        ("(R) Contract to Installation", install_retail_conv),
+    ] {
+        writeln!(
+            &mut result,
+            "{:30}    Rate {} | Total {:2} | Avg Time {:.2} days\n    {}",
+            name,
+            percent_or_na(conv_stats.conversion_rate),
+            conv_stats.achieved.len(),
+            into_days(conv_stats.average_time_to_achieve),
+            into_list_of_job_nums(&conv_stats.achieved),
+        ).unwrap();
+    }
+    result
 }
