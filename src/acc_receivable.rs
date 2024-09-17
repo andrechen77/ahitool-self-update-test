@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, io::Write};
 
 use anyhow::Result;
 use chrono::Utc;
@@ -10,9 +10,13 @@ use crate::{
 
 #[derive(clap::Args, Debug)]
 pub struct Args {
-    // none so far
+    /// The format in which to print the output.
     #[arg(long, value_enum, default_value = "human")]
     format: OutputFormat,
+
+    /// The file to write the output to. "-" will write to stdout.
+    #[arg(short, default_value = "-")]
+    output: String,
 }
 
 #[derive(Debug, clap::ValueEnum, Clone, Copy, Eq, PartialEq)]
@@ -38,6 +42,8 @@ struct Results<'a> {
 }
 
 pub fn main(api_key: &str, args: Args) -> Result<()> {
+    let Args { output, format } = args;
+
     let jobs = job_nimbus_api::get_all_jobs_from_job_nimbus(&api_key, None)?;
 
     let mut results = Results { total: 0, categorized_jobs: HashMap::new() };
@@ -56,33 +62,40 @@ pub fn main(api_key: &str, args: Args) -> Result<()> {
         }
     }
 
-    match args.format {
-        OutputFormat::Human => print_human(&results),
-        OutputFormat::Csv => print_csv(&results),
+    let output_writer: Box<dyn Write> = match output.as_str() {
+        "-" => Box::new(std::io::stdout()),
+        path => Box::new(std::fs::File::create(path)?),
+    };
+
+    match format {
+        OutputFormat::Human => print_human(&results, output_writer)?,
+        OutputFormat::Csv => print_csv(&results, output_writer)?,
     }
 
     Ok(())
 }
 
-fn print_human(results: &Results) {
-    println!("Total: ${}", results.total as f64 / 100.0);
+fn print_human(results: &Results, mut writer: impl Write) -> std::io::Result<()> {
+    writeln!(writer, "Total: ${}", results.total as f64 / 100.0)?;
     for (status, (category_total, jobs)) in &results.categorized_jobs {
-        println!("    - {}: total ${}", status, *category_total as f64 / 100.0);
+        writeln!(writer, "    - {}: total ${}", status, *category_total as f64 / 100.0)?;
         for job in jobs {
             let name = job.job_name.as_deref().unwrap_or("");
             let number = job.job_number.as_deref().unwrap_or("Unknown Job Number");
             let amount_receivable = job.amt_receivable as f64 / 100.0;
             let days_in_status = Utc::now().signed_duration_since(job.status_mod_date).num_days();
-            println!(
+            writeln!(
+                writer,
                 "        - {} (#{}): ${:.2} ({} days)",
                 name, number, amount_receivable, days_in_status
-            );
+            )?;
         }
     }
+    Ok(())
 }
 
-fn print_csv(results: &Results) {
-    let mut writer = csv::Writer::from_writer(std::io::stdout());
+fn print_csv(results: &Results, writer: impl Write) -> std::io::Result<()> {
+    let mut writer = csv::Writer::from_writer(writer);
     writer
         .write_record(&["Job Name", "Job Number", "Job Status", "Amount", "Days In Status"])
         .unwrap();
@@ -105,4 +118,5 @@ fn print_csv(results: &Results) {
         }
     }
     writer.flush().unwrap();
+    Ok(())
 }
