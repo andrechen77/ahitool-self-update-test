@@ -98,6 +98,7 @@ pub fn main(api_key: &str, args: Args) -> Result<()> {
     let tracker_stats = trackers
         .into_iter()
         .map(|(rep, tracker)| (rep, calculate_job_tracker_stats(&tracker)))
+        .filter(|(_, stats)| stats.appt_count > 0)
         .collect::<BTreeMap<_, _>>();
 
     #[derive(PartialEq, Eq)]
@@ -227,9 +228,12 @@ fn process_jobs(
                 }
             }
         }
-        let sales_rep_errors: &mut Vec<_> = red_flags.entry(target).or_default();
-        for error in errors {
-            sales_rep_errors.push((analyzed.clone(), error));
+
+        if !errors.is_empty() {
+            let sales_rep_errors: &mut Vec<_> = red_flags.entry(target).or_default();
+            for error in errors {
+                sales_rep_errors.push((analyzed.clone(), error));
+            }
         }
     }
 
@@ -247,6 +251,7 @@ fn build_job_tracker() -> JobTracker3x5 {
     ])
 }
 
+#[derive(Debug)]
 struct JobTrackerStats {
     appt_count: usize,
     install_count: usize,
@@ -259,6 +264,7 @@ struct JobTrackerStats {
     install_retail_conv: ConversionStats,
 }
 
+#[derive(Debug)]
 struct ConversionStats {
     /// All the jobs that made the conversion.
     achieved: Vec<Rc<AnalyzedJob>>,
