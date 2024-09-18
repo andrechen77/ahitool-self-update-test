@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fmt::Display;
 use std::io::Write;
 use std::{collections::HashMap, rc::Rc};
@@ -97,7 +98,7 @@ pub fn main(api_key: &str, args: Args) -> Result<()> {
     let tracker_stats = trackers
         .into_iter()
         .map(|(rep, tracker)| (rep, calculate_job_tracker_stats(&tracker)))
-        .collect::<HashMap<_, _>>();
+        .collect::<BTreeMap<_, _>>();
 
     #[derive(PartialEq, Eq)]
     enum StatsOrFlags {
@@ -141,7 +142,8 @@ pub fn main(api_key: &str, args: Args) -> Result<()> {
         match format {
             OutputFormat::Human => {
                 writeln!(&mut output_writer, "Tracker for {}: ================", rep)?;
-                write_job_tracker_stats_human(&mut output_writer, &stats)?;
+                write_job_tracker_stats_human(&mut output_writer, &stats, rep != TrackerTargetKind::Global)?;
+                writeln!(&mut output_writer, "")?;
             }
             OutputFormat::Csv => {
                 write_job_tracker_stats_csv(&mut output_writer, &stats)?;
@@ -165,7 +167,7 @@ pub fn main(api_key: &str, args: Args) -> Result<()> {
     Ok(())
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 enum TrackerTargetKind {
     Global,
     SalesRep(String),
@@ -372,6 +374,7 @@ fn into_list_of_job_nums(jobs: &[Rc<AnalyzedJob>]) -> String {
 fn write_job_tracker_stats_human(
     writer: &mut impl Write,
     tracker_stats: &JobTrackerStats,
+    list_jobs: bool,
 ) -> std::io::Result<()> {
     let JobTrackerStats {
         appt_count,
@@ -397,13 +400,15 @@ fn write_job_tracker_stats_human(
     ] {
         writeln!(
             writer,
-            "{:30}    Rate {} | Total {:2} | Avg Time {:.2} days\n    {}",
+            "{:30}    Rate {} | Total {:2} | Avg Time {:.2} days",
             name,
             percent_or_na(conv_stats.conversion_rate),
             conv_stats.achieved.len(),
             into_days(conv_stats.average_time_to_achieve),
-            into_list_of_job_nums(&conv_stats.achieved),
         )?;
+        if list_jobs {
+            writeln!(writer, "    - {}", into_list_of_job_nums(&conv_stats.achieved))?;
+        }
     }
 
     Ok(())
