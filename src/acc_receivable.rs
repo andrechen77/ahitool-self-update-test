@@ -76,10 +76,17 @@ pub fn main(api_key: &str, args: Args) -> Result<()> {
 }
 
 fn print_human(results: &Results, mut writer: impl Write) -> std::io::Result<()> {
+    let mut zero_amt_jobs = Vec::new();
+
     writeln!(writer, "Total: ${}", results.total as f64 / 100.0)?;
     for (status, (category_total, jobs)) in &results.categorized_jobs {
         writeln!(writer, "    - {}: total ${}", status, *category_total as f64 / 100.0)?;
         for job in jobs {
+            if job.amt_receivable == 0 {
+                zero_amt_jobs.push(job);
+                continue;
+            }
+
             let name = job.job_name.as_deref().unwrap_or("");
             let number = job.job_number.as_deref().unwrap_or("Unknown Job Number");
             let amount_receivable = job.amt_receivable as f64 / 100.0;
@@ -91,6 +98,19 @@ fn print_human(results: &Results, mut writer: impl Write) -> std::io::Result<()>
             )?;
         }
     }
+
+    writeln!(writer, "Jobs with $0 receivable:")?;
+    for job in zero_amt_jobs {
+        let name = job.job_name.as_deref().unwrap_or("");
+        let number = job.job_number.as_deref().unwrap_or("Unknown Job Number");
+        let days_in_status = Utc::now().signed_duration_since(job.status_mod_date).num_days();
+        writeln!(
+            writer,
+            "    - {} (#{}): ({} for {} days)",
+            name, number, job.status, days_in_status
+        )?;
+    }
+
     Ok(())
 }
 
