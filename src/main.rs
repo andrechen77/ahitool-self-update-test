@@ -1,7 +1,10 @@
+use std::path::Path;
+
 use anyhow::{bail, Result};
 use clap::Parser;
 
 mod acc_receivable;
+mod google_sheets;
 mod job_nimbus_api;
 mod job_tracker;
 mod jobs;
@@ -25,6 +28,8 @@ enum Subcommand {
     Kpi(kpi::Args),
     /// Generate a report for all accounts receivable.
     Ar(acc_receivable::Args),
+    /// scratch option for google oauth stuff
+    Google,
 }
 
 fn main() -> Result<()> {
@@ -40,6 +45,10 @@ fn main() -> Result<()> {
         }
         Some(Subcommand::Ar(acc_recv_args)) => {
             acc_receivable::main(&api_key, acc_recv_args)?;
+        }
+        Some(Subcommand::Google) => {
+            use google_sheets::oauth;
+            oauth::get_credentials_with_cache(Path::new(oauth::DEFAULT_CACHE_FILE))?;
         }
         None => bail!("No command specified"),
     }

@@ -143,7 +143,11 @@ pub fn main(api_key: &str, args: Args) -> Result<()> {
         match format {
             OutputFormat::Human => {
                 writeln!(&mut output_writer, "Tracker for {}: ================", rep)?;
-                write_job_tracker_stats_human(&mut output_writer, &stats, rep != TrackerTargetKind::Global)?;
+                write_job_tracker_stats_human(
+                    &mut output_writer,
+                    &stats,
+                    rep != TrackerTargetKind::Global,
+                )?;
                 writeln!(&mut output_writer, "")?;
             }
             OutputFormat::Csv => {
