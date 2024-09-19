@@ -4,7 +4,7 @@ use anyhow::Result;
 use chrono::Utc;
 
 use crate::{
-    job_nimbus_api,
+    apis::job_nimbus,
     jobs::{Job, Status},
 };
 
@@ -44,7 +44,7 @@ struct Results<'a> {
 pub fn main(api_key: &str, args: Args) -> Result<()> {
     let Args { output, format } = args;
 
-    let jobs = job_nimbus_api::get_all_jobs_from_job_nimbus(&api_key, None)?;
+    let jobs = job_nimbus::get_all_jobs_from_job_nimbus(&api_key, None)?;
 
     let mut results = Results { total: 0, categorized_jobs: HashMap::new() };
     for category in CATEGORIES_WE_CARE_ABOUT {

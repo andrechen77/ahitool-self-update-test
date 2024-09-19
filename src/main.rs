@@ -2,13 +2,12 @@ use std::path::Path;
 
 use anyhow::{bail, Result};
 use clap::Parser;
+use subcommands::Subcommand;
 
-mod acc_receivable;
-mod google_sheets;
-mod job_nimbus_api;
+mod apis;
 mod job_tracker;
 mod jobs;
-mod kpi;
+mod subcommands;
 
 #[derive(Parser, Debug)]
 struct CliArgs {
@@ -22,16 +21,6 @@ struct CliArgs {
     api_key: Option<String>,
 }
 
-#[derive(clap::Subcommand, Debug)]
-enum Subcommand {
-    /// Generate a KPI report for salesmen based on job milestones.
-    Kpi(kpi::Args),
-    /// Generate a report for all accounts receivable.
-    Ar(acc_receivable::Args),
-    /// scratch option for google oauth stuff
-    Google,
-}
-
 fn main() -> Result<()> {
     let CliArgs { api_key, command } = CliArgs::parse();
 
@@ -41,13 +30,13 @@ fn main() -> Result<()> {
 
     match command {
         Some(Subcommand::Kpi(job_kpi_args)) => {
-            kpi::main(&api_key, job_kpi_args)?;
+            subcommands::kpi::main(&api_key, job_kpi_args)?;
         }
         Some(Subcommand::Ar(acc_recv_args)) => {
-            acc_receivable::main(&api_key, acc_recv_args)?;
+            subcommands::acc_receivable::main(&api_key, acc_recv_args)?;
         }
         Some(Subcommand::Google) => {
-            use google_sheets::oauth;
+            use apis::google_sheets::oauth;
             oauth::get_credentials_with_cache(Path::new(oauth::DEFAULT_CACHE_FILE))?;
         }
         None => bail!("No command specified"),

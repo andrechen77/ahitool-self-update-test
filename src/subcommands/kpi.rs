@@ -3,7 +3,7 @@ use std::fmt::Display;
 use std::io::Write;
 use std::{collections::HashMap, rc::Rc};
 
-use crate::job_nimbus_api;
+use crate::apis::job_nimbus;
 use crate::job_tracker;
 use crate::jobs;
 use crate::jobs::Timestamp;
@@ -65,7 +65,7 @@ pub fn main(api_key: &str, args: Args) -> Result<()> {
     } else {
         None
     };
-    let jobs = job_nimbus_api::get_all_jobs_from_job_nimbus(&api_key, filter.as_deref())?;
+    let jobs = job_nimbus::get_all_jobs_from_job_nimbus(&api_key, filter.as_deref())?;
 
     let from_date = match from_date.as_str() {
         "forever" => None,
