@@ -8,5 +8,5 @@ pub enum Subcommand {
     /// Generate a report for all accounts receivable.
     Ar(acc_receivable::Args),
     /// scratch option for google oauth stuff
-    Google,
+    CreateGoogleSheet,
 }

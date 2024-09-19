@@ -20,7 +20,7 @@ use std::fs::File;
 use std::io::{BufReader, BufWriter};
 use tokio::{net::TcpListener, sync::oneshot};
 
-type Token = StandardTokenResponse<EmptyExtraTokenFields, BasicTokenType>;
+pub type Token = StandardTokenResponse<EmptyExtraTokenFields, BasicTokenType>;
 
 pub const DEFAULT_CACHE_FILE: &str = "token.json";
 const CLIENT_ID: &str = "859579651850-t212eiscr880fnifmsi6ddft2bhdtplt.apps.googleusercontent.com";
