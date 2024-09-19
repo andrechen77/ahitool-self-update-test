@@ -1,4 +1,5 @@
 mod oauth;
+pub mod spreadsheet;
 
 use std::path::Path;
 
@@ -6,7 +7,7 @@ use anyhow::bail;
 pub use oauth::Token;
 use oauth2::TokenResponse as _;
 use serde::Deserialize;
-use serde_json::json;
+use spreadsheet::Spreadsheet;
 
 const ENDPOINT_SPREADSHEETS: &str = "https://sheets.googleapis.com/v4/spreadsheets";
 
@@ -15,20 +16,11 @@ pub fn get_credentials() -> anyhow::Result<Token> {
 }
 
 /// If successful, returns the URL of the created sheet.
-pub fn create_sheet(creds: &Token, sheet_name: &str) -> anyhow::Result<String> {
-    let spreadsheet_json = json!({
-        "properties": {
-            "title": sheet_name,
-        },
-    });
-
+pub fn create_sheet(creds: &Token, spreadsheet: &Spreadsheet) -> anyhow::Result<String> {
     let url = reqwest::Url::parse(ENDPOINT_SPREADSHEETS)?;
     let client = reqwest::blocking::Client::new();
-    let response = client
-        .post(url)
-        .bearer_auth(creds.access_token().secret())
-        .json(&spreadsheet_json)
-        .send()?;
+    let response =
+        client.post(url).bearer_auth(creds.access_token().secret()).json(&spreadsheet).send()?;
 
     if !response.status().is_success() {
         bail!("Request to create sheet failed with status code: {}", response.status());

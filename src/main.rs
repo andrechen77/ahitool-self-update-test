@@ -1,5 +1,3 @@
-use std::path::Path;
-
 use anyhow::{bail, Result};
 use clap::Parser;
 use subcommands::Subcommand;
@@ -34,12 +32,6 @@ fn main() -> Result<()> {
         }
         Some(Subcommand::Ar(acc_recv_args)) => {
             subcommands::acc_receivable::main(&api_key, acc_recv_args)?;
-        }
-        Some(Subcommand::CreateGoogleSheet) => {
-            use apis::google_sheets;
-            let creds = google_sheets::get_credentials()?;
-            let url = google_sheets::create_sheet(&creds, "AAAAA sheet")?;
-            println!("created spreadsheet at {}", url);
         }
         None => bail!("No command specified"),
     }

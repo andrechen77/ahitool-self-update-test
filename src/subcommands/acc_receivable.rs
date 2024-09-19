@@ -4,13 +4,26 @@ use anyhow::Result;
 use chrono::Utc;
 
 use crate::{
-    apis::job_nimbus,
+    apis::{
+        google_sheets::{
+            self,
+            spreadsheet::{
+                CellData, ExtendedValue, GridData, RowData, Sheet, SheetProperties, Spreadsheet,
+                SpreadsheetProperties,
+            },
+        },
+        job_nimbus,
+    },
     jobs::{Job, Status},
 };
 
 #[derive(clap::Args, Debug)]
 pub struct Args {
-    /// The format in which to print the output.
+    /// The format in which to print the output. "human" means to print
+    /// human-readable output. "csv" means to output as a CSV file.
+    /// "google-sheets" creates a new Google Sheet on the user's Google Drive
+    /// (so it requires authorization) and outputs a link to the new Google
+    /// Sheet.
     #[arg(long, value_enum, default_value = "human")]
     format: OutputFormat,
 
@@ -23,6 +36,7 @@ pub struct Args {
 enum OutputFormat {
     Human,
     Csv,
+    GoogleSheets,
 }
 
 const CATEGORIES_WE_CARE_ABOUT: &[Status] = &[
@@ -36,7 +50,7 @@ const CATEGORIES_WE_CARE_ABOUT: &[Status] = &[
     Status::Collections,
 ];
 
-struct Results<'a> {
+struct AccRecvableData<'a> {
     total: i32,
     categorized_jobs: HashMap<Status, (i32, Vec<&'a Job>)>,
 }
@@ -46,7 +60,7 @@ pub fn main(api_key: &str, args: Args) -> Result<()> {
 
     let jobs = job_nimbus::get_all_jobs_from_job_nimbus(&api_key, None)?;
 
-    let mut results = Results { total: 0, categorized_jobs: HashMap::new() };
+    let mut results = AccRecvableData { total: 0, categorized_jobs: HashMap::new() };
     for category in CATEGORIES_WE_CARE_ABOUT {
         results.categorized_jobs.insert(category.clone(), (0, Vec::new()));
     }
@@ -70,12 +84,16 @@ pub fn main(api_key: &str, args: Args) -> Result<()> {
     match format {
         OutputFormat::Human => print_human(&results, output_writer)?,
         OutputFormat::Csv => print_csv(&results, output_writer)?,
+        OutputFormat::GoogleSheets => {
+            let spreadsheet_name = format!("Accounts Receivable Report ({})", Utc::now());
+            create_google_sheet_and_print_link(&results, spreadsheet_name, output_writer)?;
+        }
     }
 
     Ok(())
 }
 
-fn print_human(results: &Results, mut writer: impl Write) -> std::io::Result<()> {
+fn print_human(results: &AccRecvableData, mut writer: impl Write) -> std::io::Result<()> {
     let mut zero_amt_jobs = Vec::new();
 
     writeln!(writer, "Total: ${}", results.total as f64 / 100.0)?;
@@ -114,7 +132,7 @@ fn print_human(results: &Results, mut writer: impl Write) -> std::io::Result<()>
     Ok(())
 }
 
-fn print_csv(results: &Results, writer: impl Write) -> std::io::Result<()> {
+fn print_csv(results: &AccRecvableData, writer: impl Write) -> std::io::Result<()> {
     let mut writer = csv::Writer::from_writer(writer);
     writer
         .write_record(&["Job Name", "Job Number", "Job Status", "Amount", "Days In Status"])
@@ -138,5 +156,63 @@ fn print_csv(results: &Results, writer: impl Write) -> std::io::Result<()> {
         }
     }
     writer.flush().unwrap();
+    Ok(())
+}
+
+fn create_google_sheet_and_print_link(
+    results: &AccRecvableData,
+    spreadsheet_name: String,
+    mut writer: impl Write,
+) -> anyhow::Result<()> {
+    fn mk_row(cells: impl IntoIterator<Item = ExtendedValue>) -> RowData {
+        RowData {
+            values: cells
+                .into_iter()
+                .map(|cell| CellData { user_entered_value: Some(cell) })
+                .collect(),
+        }
+    }
+
+    let mut rows = Vec::new();
+    rows.push(mk_row([
+        ExtendedValue::StringValue("Job Name".to_string()),
+        ExtendedValue::StringValue("Job Number".to_string()),
+        ExtendedValue::StringValue("Job Status".to_string()),
+        ExtendedValue::StringValue("Amount".to_string()),
+        ExtendedValue::StringValue("Days In Status".to_string()),
+    ]));
+    for (_status, (_category_total, jobs)) in &results.categorized_jobs {
+        for job in jobs {
+            let name = job.job_name.as_deref().unwrap_or("");
+            let number = job.job_number.as_deref().unwrap_or("Unknown Job Number");
+            let status = job.status.to_string();
+            let amount_receivable = (job.amt_receivable as f64) / 100.0;
+            let days_in_status = Utc::now().signed_duration_since(job.status_mod_date).num_days();
+            rows.push(mk_row([
+                ExtendedValue::StringValue(name.to_owned()),
+                ExtendedValue::StringValue(number.to_owned()),
+                ExtendedValue::StringValue(status),
+                ExtendedValue::NumberValue(amount_receivable),
+                ExtendedValue::NumberValue(days_in_status as f64),
+            ]));
+        }
+    }
+
+    let spreadsheet = Spreadsheet {
+        properties: SpreadsheetProperties { title: Some(spreadsheet_name) },
+        sheets: Some(vec![Sheet {
+            properties: SheetProperties {
+                title: Some("Accounts Receivable".to_string()),
+                ..Default::default()
+            },
+            data: GridData { start_row: 0, start_column: 0, row_data: rows },
+        }]),
+        ..Default::default()
+    };
+
+    let creds = google_sheets::get_credentials()?;
+    let url = google_sheets::create_sheet(&creds, &spreadsheet)?;
+    writer.write(url.as_bytes())?;
+    writer.write(b"\n")?;
     Ok(())
 }

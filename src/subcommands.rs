@@ -1,5 +1,5 @@
-pub mod kpi;
 pub mod acc_receivable;
+pub mod kpi;
 
 #[derive(clap::Subcommand, Debug)]
 pub enum Subcommand {
@@ -7,6 +7,4 @@ pub enum Subcommand {
     Kpi(kpi::Args),
     /// Generate a report for all accounts receivable.
     Ar(acc_receivable::Args),
-    /// scratch option for google oauth stuff
-    CreateGoogleSheet,
 }
