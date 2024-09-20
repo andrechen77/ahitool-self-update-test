@@ -3,7 +3,6 @@ use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Mutex;
 
-use anyhow::bail;
 use http_body_util::Full;
 use hyper::body::Bytes;
 use hyper::service::service_fn;
@@ -16,10 +15,10 @@ use oauth2::{
     TokenUrl,
 };
 use oauth2::{AuthorizationCode, EmptyExtraTokenFields, RedirectUrl, StandardTokenResponse};
-use tracing::info;
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
 use tokio::{net::TcpListener, sync::oneshot};
+use tracing::{info, warn};
 
 pub type Token = StandardTokenResponse<EmptyExtraTokenFields, BasicTokenType>;
 
@@ -74,14 +73,9 @@ async fn get_fresh_credentials() -> anyhow::Result<Token> {
         .url();
 
     let (tx, rx) = oneshot::channel();
-    tokio::spawn(listen_for_code(tcp_listener, tx));
-
+    tokio::spawn(listen_for_code(tcp_listener, tx, csrf_token));
     info!("Browse to the following URL to authorize the app: {}", auth_url);
-    let OAuthReply { code, state } = rx.await?;
-
-    if *csrf_token.secret() != state {
-        bail!("CSRF token does not match!, {} != {}", csrf_token.secret(), code);
-    }
+    let code = rx.await?;
 
     let token_result = client
         .exchange_code(AuthorizationCode::new(code))
@@ -92,47 +86,64 @@ async fn get_fresh_credentials() -> anyhow::Result<Token> {
     Ok(token_result)
 }
 
-#[derive(Debug)]
-struct OAuthReply {
-    code: String,
-    state: String,
-}
-
 async fn listen_for_code(
     tcp_listener: TcpListener,
-    response_tx: oneshot::Sender<OAuthReply>,
+    response_tx: oneshot::Sender<String>,
+    csrf_token: CsrfToken,
 ) -> anyhow::Result<()> {
     let (tcp_stream, _) = tcp_listener.accept().await?;
     let tcp_stream = TokioIo::new(tcp_stream);
 
     let response_tx = Mutex::new(Some(response_tx));
     let handle_request = |req: Request<IncomingBody>| {
-        let response_tx = &response_tx; // only borrow, not move, `response_tx`
+        let csrf_token = &csrf_token;
+        let response_tx = &response_tx;
         async move {
-            let http_resp = if let Some(response_tx) = response_tx.lock().unwrap().take() {
+            fn mk_response(resp: &'static str) -> Result<Response<Full<Bytes>>, Infallible> {
+                Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(resp))))
+            }
+
+            // find the code and verify the state in the query string
+            let code = {
                 let mut code = None;
-                let mut state = None;
+                let mut state_matches = false;
                 for (k, v) in
                     url::form_urlencoded::parse(req.uri().query().unwrap_or("").as_bytes())
                 {
                     match k.as_ref() {
                         "code" => code = Some(v),
-                        "state" => state = Some(v),
+                        "state" => {
+                            if *csrf_token.secret() == v {
+                                state_matches = true;
+                            } else {
+                                // ignore the rest of this request as it is invalid
+                                break;
+                            }
+                        }
                         _ => (),
                     }
                 }
-                response_tx
-                    .send(OAuthReply {
-                        // FIXME: better error handling
-                        code: code.expect("reply should have a code").into_owned(),
-                        state: state.expect("reply should have a state").into_owned(),
-                    })
-                    .expect("the corresponding receiver has no way of being deallocated");
-                "Authorization code received. You can now close this window."
-            } else {
-                "The app may have already been authorized; if not then try again."
+                if code.is_some() && state_matches {
+                    if let Some(code) = code {
+                        code
+                    } else {
+                        return mk_response("Authorization code not found in redirect. Try again or contact the developer.");
+                    }
+                } else {
+                    // the request did not include a valid state, so it must be
+                    // rejected
+                    warn!("Authorization redirect did not include a valid state. This may be an indication of an attempted attack.");
+                    return mk_response("Authorization code rejected due to invalid state. Try again or contact the developer.");
+                }
             };
-            Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(http_resp))))
+
+            // attempt to send the valid code back
+            if let Some(response_tx) = response_tx.lock().unwrap().take() {
+                let _ = response_tx.send(code.into_owned());
+                mk_response("Authorization code received. You can now close this window.")
+            } else {
+                mk_response("The app may have already been authorized; if not then try again.")
+            }
         }
     };
 
