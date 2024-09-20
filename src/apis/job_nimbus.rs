@@ -1,8 +1,33 @@
-use anyhow::{bail, Result};
+use std::{fs, path::Path};
+
+use anyhow::bail;
 use reqwest::{self, blocking::Response, header::CONTENT_TYPE};
 use serde::Deserialize;
 
 use crate::jobs::Job;
+
+const DEFAULT_CACHE_FILE: &str = "job_nimbus_api_key.txt";
+
+#[derive(Debug, thiserror::Error)]
+pub enum GetApiKeyError {
+    #[error("An API key was not specified and the cache file does not exist.")]
+    MissingApiKey,
+    #[error(transparent)]
+    IoError(#[from] std::io::Error),
+}
+
+pub fn get_api_key(new_api_key: Option<String>) -> Result<String, GetApiKeyError> {
+    let cache_file = Path::new(DEFAULT_CACHE_FILE);
+
+    if let Some(new_api_key) = new_api_key {
+        let _ = fs::write(cache_file, &new_api_key);
+        Ok(new_api_key)
+    } else if cache_file.exists() {
+        Ok(fs::read_to_string(cache_file)?)
+    } else {
+        Err(GetApiKeyError::MissingApiKey)
+    }
+}
 
 const ENDPOINT_JOBS: &str = "https://app.jobnimbus.com/api1/jobs";
 
@@ -10,7 +35,7 @@ fn request_from_job_nimbus(
     api_key: &str,
     num_jobs: usize,
     filter: Option<&str>,
-) -> Result<Response> {
+) -> anyhow::Result<Response> {
     let url = reqwest::Url::parse(ENDPOINT_JOBS)?;
     let client = reqwest::blocking::Client::new();
     let mut request = client
@@ -29,7 +54,10 @@ fn request_from_job_nimbus(
 }
 
 // blocking
-pub fn get_all_jobs_from_job_nimbus(api_key: &str, filter: Option<&str>) -> Result<Vec<Job>> {
+pub fn get_all_jobs_from_job_nimbus(
+    api_key: &str,
+    filter: Option<&str>,
+) -> anyhow::Result<Vec<Job>> {
     use serde_json::Value;
     #[derive(Deserialize)]
     struct ApiResponse {

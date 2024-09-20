@@ -22,7 +22,7 @@ use tokio::{net::TcpListener, sync::oneshot};
 
 pub type Token = StandardTokenResponse<EmptyExtraTokenFields, BasicTokenType>;
 
-pub const DEFAULT_CACHE_FILE: &str = "token.json";
+pub const DEFAULT_CACHE_FILE: &str = "google_oauth_token.json";
 const CLIENT_ID: &str = "859579651850-t212eiscr880fnifmsi6ddft2bhdtplt.apps.googleusercontent.com";
 // It should be fine that the secret is not actually kept secret. see
 // https://developers.google.com/identity/protocols/oauth2

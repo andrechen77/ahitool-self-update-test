@@ -13,25 +13,22 @@ struct CliArgs {
     #[command(subcommand)]
     command: Option<Subcommand>,
 
-    /// The JobNimbus API key. If omitted, the AHI_API_KEY environment variable
-    /// will be used.
-    #[arg(long, default_value = None)]
-    api_key: Option<String>,
+    /// The JobNimbus API key. This key will be cached.
+    #[arg(long, default_value = None, global = true)]
+    jn_api_key: Option<String>,
 }
 
 fn main() -> Result<()> {
-    let CliArgs { api_key, command } = CliArgs::parse();
+    let CliArgs { jn_api_key: api_key, command } = CliArgs::parse();
 
-    let Some(api_key) = api_key.or(std::env::var("AHI_API_KEY").ok()) else {
-        bail!("AHI_API_KEY environment variable not set");
-    };
+    let jn_api_key = apis::job_nimbus::get_api_key(api_key)?;
 
     match command {
         Some(Subcommand::Kpi(job_kpi_args)) => {
-            subcommands::kpi::main(&api_key, job_kpi_args)?;
+            subcommands::kpi::main(&jn_api_key, job_kpi_args)?;
         }
         Some(Subcommand::Ar(acc_recv_args)) => {
-            subcommands::acc_receivable::main(&api_key, acc_recv_args)?;
+            subcommands::acc_receivable::main(&jn_api_key, acc_recv_args)?;
         }
         None => bail!("No command specified"),
     }
