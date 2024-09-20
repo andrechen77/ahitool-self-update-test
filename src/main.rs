@@ -19,6 +19,9 @@ struct CliArgs {
 }
 
 fn main() -> Result<()> {
+    // set up tracing
+    tracing_subscriber::fmt::init();
+
     let CliArgs { jn_api_key: api_key, command } = CliArgs::parse();
 
     let jn_api_key = apis::job_nimbus::get_api_key(api_key)?;

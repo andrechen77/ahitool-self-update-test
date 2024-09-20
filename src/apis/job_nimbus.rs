@@ -3,6 +3,7 @@ use std::{fs, path::Path};
 use anyhow::bail;
 use reqwest::{self, blocking::Response, header::CONTENT_TYPE};
 use serde::Deserialize;
+use tracing::info;
 
 use crate::jobs::Job;
 
@@ -65,19 +66,19 @@ pub fn get_all_jobs_from_job_nimbus(
         results: Vec<Value>,
     }
 
-    eprintln!("getting all jobs from JobNimbus");
+    info!("getting all jobs from JobNimbus");
 
     // make a request to find out the number of jobs
     let response = request_from_job_nimbus(api_key, 1, filter)?;
     let response: ApiResponse = response.json()?;
     let count = response.count as usize;
 
-    eprintln!("detected {} jobs in JobNimbus", count);
+    info!("detected {} jobs in JobNimbus", count);
 
     // make a request to actually get those jobs
     let response = request_from_job_nimbus(api_key, count, filter)?;
     let response: ApiResponse = response.json()?;
-    eprintln!("recieved {} jobs from JobNimbus", response.count);
+    info!("recieved {} jobs from JobNimbus", response.count);
     assert_eq!(response.count as usize, count);
 
     let results: Result<Vec<_>, _> = response.results.into_iter().map(Job::try_from).collect();

@@ -17,6 +17,7 @@ use chrono::TimeZone as _;
 use chrono::Utc;
 use job_tracker::{CalcStatsResult, JobTracker};
 use jobs::{AnalyzedJob, Job, JobAnalysisError, JobKind, Milestone, TimeDelta};
+use tracing::info;
 
 #[derive(clap::Args, Debug)]
 pub struct Args {
@@ -196,7 +197,7 @@ fn process_jobs(
     jobs: impl Iterator<Item = Job>,
     (from_dt, to_dt): (Option<Timestamp>, Option<Timestamp>),
 ) -> ProcessJobsResult {
-    eprintln!(
+    info!(
         "Processing jobs settled between {} and {}",
         from_dt.map(|dt| dt.to_string()).as_deref().unwrap_or("the beginning of time"),
         to_dt.map(|dt| dt.to_string()).as_deref().unwrap_or("the end of time")

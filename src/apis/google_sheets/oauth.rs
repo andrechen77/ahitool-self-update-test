@@ -16,6 +16,7 @@ use oauth2::{
     TokenUrl,
 };
 use oauth2::{AuthorizationCode, EmptyExtraTokenFields, RedirectUrl, StandardTokenResponse};
+use tracing::info;
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
 use tokio::{net::TcpListener, sync::oneshot};
@@ -75,7 +76,7 @@ async fn get_fresh_credentials() -> anyhow::Result<Token> {
     let (tx, rx) = oneshot::channel();
     tokio::spawn(listen_for_code(tcp_listener, tx));
 
-    println!("Browse to the following URL to authorize the app: {}", auth_url);
+    info!("Browse to the following URL to authorize the app: {}", auth_url);
     let OAuthReply { code, state } = rx.await?;
 
     if *csrf_token.secret() != state {
