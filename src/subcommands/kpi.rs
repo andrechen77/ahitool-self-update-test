@@ -43,7 +43,7 @@ pub struct Args {
     /// The directory to write the output to. "-" or unspecified will write
     /// concatenated file contents to stdout. This option is ignored with
     /// `--format google-sheets`.
-    #[arg(short, long, default_value = "-")]
+    #[arg(short, long, default_value = None)]
     output: Option<String>,
 }
 
