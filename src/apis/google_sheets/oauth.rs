@@ -4,7 +4,7 @@ use std::path::Path;
 use std::sync::Mutex;
 
 use http_body_util::Full;
-use hyper::body::{Body, Bytes};
+use hyper::body::Bytes;
 use hyper::service::service_fn;
 use hyper::StatusCode;
 use hyper::{body::Incoming as IncomingBody, server::conn::http1, Request, Response};

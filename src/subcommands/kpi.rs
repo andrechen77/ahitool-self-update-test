@@ -11,6 +11,7 @@ use chrono::NaiveDateTime;
 use chrono::NaiveTime;
 use chrono::TimeZone as _;
 use chrono::Utc;
+use tracing::warn;
 
 #[derive(clap::Args, Debug)]
 pub struct Args {
@@ -40,7 +41,8 @@ pub struct Args {
     format: OutputFormat,
 
     /// The directory to write the output to. "-" or unspecified will write
-    /// concatenated file contents to stdout.
+    /// concatenated file contents to stdout. This option is ignored with
+    /// `--format google-sheets`.
     #[arg(short, long, default_value = "-")]
     output: Option<String>,
 }
@@ -54,10 +56,16 @@ enum OutputFormat {
     /// corresponds to a sales rep's stats, and there is also a CSV file for
     /// red flags.
     Csv,
+    /// Creates a new Google Sheet on the user's Google Drive (requires OAuth
+    /// authorization), and outputs and opens a link to the new Google Sheet.
+    GoogleSheets,
 }
 
 pub fn main(api_key: &str, args: Args) -> Result<()> {
     let Args { filter_filename, from_date, to_date, format, output } = args;
+    if format == OutputFormat::GoogleSheets && output.is_some() {
+        warn!("The `--output` option will be ignored due to `--format google-sheets`");
+    }
 
     let filter = if let Some(filter_filename) = filter_filename {
         Some(std::fs::read_to_string(filter_filename)?)
@@ -104,6 +112,9 @@ pub fn main(api_key: &str, args: Args) -> Result<()> {
     match format {
         OutputFormat::Human => output::print_report_human(&tracker_stats, &red_flags, output)?,
         OutputFormat::Csv => output::print_report_csv(&tracker_stats, &red_flags, output)?,
+        OutputFormat::GoogleSheets => {
+            output::generate_report_google_sheets(&tracker_stats, &red_flags)?
+        }
     }
 
     Ok(())
@@ -337,7 +348,19 @@ mod output {
         rc::Rc,
     };
 
-    use crate::jobs::{AnalyzedJob, JobAnalysisError, TimeDelta};
+    use chrono::Utc;
+    use tracing::info;
+
+    use crate::{
+        apis::google_sheets::{
+            self,
+            spreadsheet::{
+                CellData, ExtendedValue, GridData, RowData, Sheet, SheetProperties, Spreadsheet,
+                SpreadsheetProperties,
+            },
+        },
+        jobs::{AnalyzedJob, JobAnalysisError, TimeDelta},
+    };
 
     use super::{processing::JobTrackerStats, KpiSubject};
 
@@ -491,6 +514,111 @@ mod output {
         }
         out.flush()?;
 
+        Ok(())
+    }
+
+    pub fn generate_report_google_sheets<'a>(
+        tracker_stats: impl IntoIterator<Item = (&'a KpiSubject, &'a JobTrackerStats)>,
+        red_flags: impl IntoIterator<
+            Item = (&'a KpiSubject, &'a Vec<(Rc<AnalyzedJob>, JobAnalysisError)>),
+        >,
+    ) -> anyhow::Result<()> {
+        fn mk_row(cells: impl IntoIterator<Item = ExtendedValue>) -> RowData {
+            RowData {
+                values: cells
+                    .into_iter()
+                    .map(|cell| CellData { user_entered_value: Some(cell) })
+                    .collect(),
+            }
+        }
+
+        // create a stats sheet for each rep
+        let mut sheets: Vec<_> = tracker_stats
+            .into_iter()
+            .map(|(rep, stats)| {
+                let mut rows = Vec::new();
+                rows.push(mk_row([
+                    ExtendedValue::StringValue("Conversion".to_string()),
+                    ExtendedValue::StringValue("Rate".to_string()),
+                    ExtendedValue::StringValue("Total".to_string()),
+                    ExtendedValue::StringValue("Avg Time (days)".to_string()),
+                    ExtendedValue::StringValue("Jobs".to_string()),
+                ]));
+                for (name, conv_stats) in [
+                    ("All Losses", &stats.loss_conv),
+                    ("(I) Appt to Contingency", &stats.appt_continge_conv),
+                    ("(I) Appt to Contract", &stats.appt_contract_insure_conv),
+                    ("(I) Contingency to Contract", &stats.continge_contract_conv),
+                    ("(R) Appt to Contract", &stats.appt_contract_retail_conv),
+                    ("(I) Contract to Installation", &stats.install_insure_conv),
+                    ("(R) Contract to Installation", &stats.install_retail_conv),
+                ] {
+                    rows.push(mk_row([
+                        ExtendedValue::StringValue(name.to_string()),
+                        ExtendedValue::StringValue(percent_or_na(conv_stats.conversion_rate)),
+                        ExtendedValue::NumberValue(conv_stats.achieved.len() as f64),
+                        ExtendedValue::NumberValue(into_days(conv_stats.average_time_to_achieve)),
+                        ExtendedValue::StringValue(into_list_of_job_nums(&conv_stats.achieved)),
+                    ]));
+                }
+                rows.push(mk_row([
+                    ExtendedValue::StringValue("Appts".to_string()),
+                    ExtendedValue::NumberValue(stats.appt_count as f64),
+                    ExtendedValue::StringValue("".to_string()),
+                    ExtendedValue::StringValue("Installed".to_string()),
+                    ExtendedValue::NumberValue(stats.install_count as f64),
+                ]));
+
+                Sheet {
+                    properties: SheetProperties {
+                        title: Some(format!("Stats {}", rep)),
+                        ..Default::default()
+                    },
+                    data: GridData { start_row: 0, start_column: 0, row_data: rows },
+                    ..Default::default()
+                }
+            })
+            .collect();
+
+        // create the red flags sheet
+        let mut rows = Vec::new();
+        rows.push(mk_row([
+            ExtendedValue::StringValue("Sales Rep".to_string()),
+            ExtendedValue::StringValue("Job Number".to_string()),
+            ExtendedValue::StringValue("Error".to_string()),
+        ]));
+        for (rep, red_flags) in red_flags {
+            for (job, err) in red_flags {
+                rows.push(mk_row([
+                    ExtendedValue::StringValue(rep.to_string()),
+                    ExtendedValue::StringValue(
+                        job.job.job_number.as_deref().unwrap_or("unknown job #").to_string(),
+                    ),
+                    ExtendedValue::StringValue(err.to_string()),
+                ]));
+            }
+        }
+        sheets.push(Sheet {
+            properties: SheetProperties {
+                title: Some("Red Flags".to_string()),
+                ..Default::default()
+            },
+            data: GridData { start_row: 0, start_column: 0, row_data: rows },
+            ..Default::default()
+        });
+
+        // create the spreadsheet
+        let spreadsheet = Spreadsheet {
+            properties: SpreadsheetProperties {
+                title: Some(format!("KPI Report ({})", Utc::now())),
+            },
+            sheets: Some(sheets),
+            ..Default::default()
+        };
+
+        let creds = google_sheets::get_credentials()?;
+        let url = google_sheets::create_sheet(&creds, &spreadsheet)?;
+        info!("Created new Google Sheet at {}", url);
         Ok(())
     }
 

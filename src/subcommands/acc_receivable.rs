@@ -89,8 +89,7 @@ pub fn main(api_key: &str, args: Args) -> anyhow::Result<()> {
         OutputFormat::Human => print_human(&results, output_writer)?,
         OutputFormat::Csv => print_csv(&results, output_writer)?,
         OutputFormat::GoogleSheets => {
-            let spreadsheet_name = format!("Accounts Receivable Report ({})", Utc::now());
-            create_google_sheet_and_print_link(&results, spreadsheet_name)?;
+            create_google_sheet_and_print_link(&results)?;
         }
     }
 
@@ -163,10 +162,7 @@ fn print_csv(results: &AccRecvableData, writer: impl Write) -> std::io::Result<(
     Ok(())
 }
 
-fn create_google_sheet_and_print_link(
-    results: &AccRecvableData,
-    spreadsheet_name: String,
-) -> anyhow::Result<()> {
+fn create_google_sheet_and_print_link(results: &AccRecvableData) -> anyhow::Result<()> {
     fn mk_row(cells: impl IntoIterator<Item = ExtendedValue>) -> RowData {
         RowData {
             values: cells
@@ -202,7 +198,9 @@ fn create_google_sheet_and_print_link(
     }
 
     let spreadsheet = Spreadsheet {
-        properties: SpreadsheetProperties { title: Some(spreadsheet_name) },
+        properties: SpreadsheetProperties {
+            title: Some(format!("Accounts Receivable Report ({})", Utc::now())),
+        },
         sheets: Some(vec![Sheet {
             properties: SheetProperties {
                 title: Some("Accounts Receivable".to_string()),
