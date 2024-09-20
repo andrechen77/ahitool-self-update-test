@@ -4,8 +4,9 @@ use std::path::Path;
 use std::sync::Mutex;
 
 use http_body_util::Full;
-use hyper::body::Bytes;
+use hyper::body::{Body, Bytes};
 use hyper::service::service_fn;
+use hyper::StatusCode;
 use hyper::{body::Incoming as IncomingBody, server::conn::http1, Request, Response};
 use hyper_util::rt::TokioIo;
 use oauth2::basic::BasicTokenType;
@@ -18,7 +19,7 @@ use oauth2::{AuthorizationCode, EmptyExtraTokenFields, RedirectUrl, StandardToke
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
 use tokio::{net::TcpListener, sync::oneshot};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 pub type Token = StandardTokenResponse<EmptyExtraTokenFields, BasicTokenType>;
 
@@ -96,11 +97,21 @@ async fn listen_for_code(
 
     let response_tx = Mutex::new(Some(response_tx));
     let handle_request = |req: Request<IncomingBody>| {
+        debug!("Received request: {:?}", req);
         let csrf_token = &csrf_token;
         let response_tx = &response_tx;
         async move {
             fn mk_response(resp: &'static str) -> Result<Response<Full<Bytes>>, Infallible> {
                 Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(resp))))
+            }
+
+            // verify that this is a request we care about. in particular, we
+            // want to ignore requests to paths like /favicon.ico
+            if req.uri().path() != "/" {
+                return Ok(Response::builder()
+                    .status(StatusCode::NO_CONTENT)
+                    .body(Full::new(Bytes::new()))
+                    .expect("This should be a valid response"));
             }
 
             // find the code and verify the state in the query string
@@ -123,7 +134,7 @@ async fn listen_for_code(
                         _ => (),
                     }
                 }
-                if code.is_some() && state_matches {
+                if state_matches {
                     if let Some(code) = code {
                         code
                     } else {
