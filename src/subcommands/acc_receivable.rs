@@ -1,7 +1,7 @@
 use std::{collections::HashMap, io::Write};
 
-use anyhow::Result;
 use chrono::Utc;
+use tracing::{info, warn};
 
 use crate::{
     apis::{
@@ -19,23 +19,24 @@ use crate::{
 
 #[derive(clap::Args, Debug)]
 pub struct Args {
-    /// The format in which to print the output. "human" means to print
-    /// human-readable output. "csv" means to output as a CSV file.
-    /// "google-sheets" creates a new Google Sheet on the user's Google Drive
-    /// (so it requires authorization) and outputs a link to the new Google
-    /// Sheet.
+    /// The format in which to print the output.
     #[arg(long, value_enum, default_value = "human")]
     format: OutputFormat,
 
-    /// The file to write the output to. "-" will write to stdout.
-    #[arg(short, default_value = "-")]
-    output: String,
+    /// The file to write the output to. "-" or unspecified will write to
+    /// stdout. This option is ignored with `--format google-sheets`.
+    #[arg(short, long, default_value = None)]
+    output: Option<String>,
 }
 
 #[derive(Debug, clap::ValueEnum, Clone, Copy, Eq, PartialEq)]
 enum OutputFormat {
+    /// Prints a human-readable report into the output file.
     Human,
+    /// Prints a CSV file into the output file.
     Csv,
+    /// Creates a new Google Sheet on the user's Google Drive (requires OAuth
+    /// authorization), and outputs and opens a link to the new Google Sheet.
     GoogleSheets,
 }
 
@@ -55,8 +56,11 @@ struct AccRecvableData<'a> {
     categorized_jobs: HashMap<Status, (i32, Vec<&'a Job>)>,
 }
 
-pub fn main(api_key: &str, args: Args) -> Result<()> {
+pub fn main(api_key: &str, args: Args) -> anyhow::Result<()> {
     let Args { output, format } = args;
+    if format == OutputFormat::GoogleSheets && output.is_some() {
+        warn!("The `--output` option will be ignored due to `--format google-sheets`");
+    }
 
     let jobs = job_nimbus::get_all_jobs_from_job_nimbus(&api_key, None)?;
 
@@ -76,9 +80,9 @@ pub fn main(api_key: &str, args: Args) -> Result<()> {
         }
     }
 
-    let output_writer: Box<dyn Write> = match output.as_str() {
-        "-" => Box::new(std::io::stdout()),
-        path => Box::new(std::fs::File::create(path)?),
+    let output_writer: Box<dyn Write> = match output.as_deref() {
+        Some("-") | None => Box::new(std::io::stdout()),
+        Some(path) => Box::new(std::fs::File::create(path)?),
     };
 
     match format {
@@ -86,7 +90,7 @@ pub fn main(api_key: &str, args: Args) -> Result<()> {
         OutputFormat::Csv => print_csv(&results, output_writer)?,
         OutputFormat::GoogleSheets => {
             let spreadsheet_name = format!("Accounts Receivable Report ({})", Utc::now());
-            create_google_sheet_and_print_link(&results, spreadsheet_name, output_writer)?;
+            create_google_sheet_and_print_link(&results, spreadsheet_name)?;
         }
     }
 
@@ -162,7 +166,6 @@ fn print_csv(results: &AccRecvableData, writer: impl Write) -> std::io::Result<(
 fn create_google_sheet_and_print_link(
     results: &AccRecvableData,
     spreadsheet_name: String,
-    mut writer: impl Write,
 ) -> anyhow::Result<()> {
     fn mk_row(cells: impl IntoIterator<Item = ExtendedValue>) -> RowData {
         RowData {
@@ -212,7 +215,6 @@ fn create_google_sheet_and_print_link(
 
     let creds = google_sheets::get_credentials()?;
     let url = google_sheets::create_sheet(&creds, &spreadsheet)?;
-    writer.write(url.as_bytes())?;
-    writer.write(b"\n")?;
+    info!("Created new Google Sheet at {}", url);
     Ok(())
 }
