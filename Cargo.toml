@@ -1,5 +1,5 @@
 [package]
-name = "ahi_kpi"
+name = "ahitool"
 version = "0.1.0"
 edition = "2021"
 
