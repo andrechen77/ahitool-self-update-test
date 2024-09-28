@@ -574,7 +574,7 @@ mod output {
                         title: Some(format!("Stats {}", rep)),
                         ..Default::default()
                     },
-                    data: GridData { start_row: 0, start_column: 0, row_data: rows },
+                    data: GridData { start_row: 1, start_column: 1, row_data: rows },
                     ..Default::default()
                 }
             })

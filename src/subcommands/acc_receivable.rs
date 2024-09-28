@@ -206,7 +206,7 @@ fn create_google_sheet_and_print_link(results: &AccRecvableData) -> anyhow::Resu
                 title: Some("Accounts Receivable".to_string()),
                 ..Default::default()
             },
-            data: GridData { start_row: 0, start_column: 0, row_data: rows },
+            data: GridData { start_row: 1, start_column: 1, row_data: rows },
         }]),
         ..Default::default()
     };
