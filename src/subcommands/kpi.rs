@@ -574,7 +574,7 @@ mod output {
                         title: Some(format!("Stats {}", rep)),
                         ..Default::default()
                     },
-                    data: GridData { start_row: 1, start_column: 1, row_data: rows },
+                    data: Some(GridData { start_row: 1, start_column: 1, row_data: rows }),
                     ..Default::default()
                 }
             })
@@ -603,7 +603,7 @@ mod output {
                 title: Some("Red Flags".to_string()),
                 ..Default::default()
             },
-            data: GridData { start_row: 0, start_column: 0, row_data: rows },
+            data: Some(GridData { start_row: 0, start_column: 0, row_data: rows }),
             ..Default::default()
         });
 
@@ -616,17 +616,23 @@ mod output {
             ..Default::default()
         };
 
-        let url =
+        let _url =
             tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap().block_on(
                 google_sheets::run_with_credentials(|token| {
                     // FIXME cloning the token is a workaround because I can't
                     // get lifetimes to work correctly in run_with_credentials
                     let token = token.clone();
                     let spreadsheet = &spreadsheet;
-                    async move { google_sheets::create_sheet(&token, &spreadsheet).await }
+                    async move {
+                        google_sheets::create_or_write_spreadsheet(
+                            &token,
+                            google_sheets::SheetNickname::Kpi,
+                            spreadsheet.clone(),
+                        )
+                        .await
+                    }
                 }),
             )?;
-        info!("Created new Google Sheet at {}", url);
         Ok(())
     }
 

@@ -19,9 +19,9 @@ use oauth2::{
 };
 use oauth2::{AuthorizationCode, RedirectUrl, RefreshToken, TokenResponse};
 use serde::{Deserialize, Serialize};
-use thiserror::Error;
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
+use thiserror::Error;
 use tokio::{net::TcpListener, sync::oneshot};
 use tracing::{debug, info, trace, warn};
 
@@ -273,7 +273,6 @@ async fn listen_for_code(
 
     let response_tx = Mutex::new(Some(response_tx));
     let handle_request = |req: Request<IncomingBody>| {
-        trace!("Received request: {:?}", req);
         let csrf_token = &csrf_token;
         let response_tx = &response_tx;
         async move {
