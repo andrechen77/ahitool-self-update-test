@@ -19,6 +19,7 @@ use oauth2::{
 };
 use oauth2::{AuthorizationCode, RedirectUrl, RefreshToken, TokenResponse};
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
 use tokio::{net::TcpListener, sync::oneshot};
@@ -41,12 +42,20 @@ struct TokenWithExpiration {
     time_obtained: DateTime<Utc>,
 }
 
+#[derive(Error, Debug)]
+pub enum TryWithCredentialsError {
+    #[error("the OAuth credentials are invalid")]
+    Unauthorized(anyhow::Error),
+    #[error("an error occurred while running an operation using OAuth credentials")]
+    Other(#[from] anyhow::Error),
+}
+
 /// Runs a function that requires OAuth credentials. If the provided function
 /// returns an error, this is interpreted as the credentials being invalid.
 pub async fn run_with_credentials<F, O, U>(mut operation: O) -> anyhow::Result<U>
 where
     O: FnMut(&Token) -> F, // TODO find a way to make this work with &Token without lifetimes screaming at you
-    F: Future<Output = anyhow::Result<U>>,
+    F: Future<Output = Result<U, TryWithCredentialsError>>,
 {
     let cache_file = Path::new(DEFAULT_CACHE_FILE);
 
@@ -61,13 +70,18 @@ where
                     // refresh anything, we do not need to cache the token again
                     return Ok(result);
                 }
-                Err(e) => {
-                    debug!("error while performing operation with cached token: {}", e);
+                Err(TryWithCredentialsError::Unauthorized(e)) => {
+                    debug!("cached token is invalid, as indicated by error: {}", e);
                     // even though `get_cached_token` returned `false`, the
                     // token might still be expired (either expired in between
                     // when we last checked till now, or it didn't have an
                     // indicated expiration date
                     Some(cached_token)
+                }
+                Err(TryWithCredentialsError::Other(e)) => {
+                    // the problem was not with the credentials, so just return
+                    // this error
+                    return Err(e);
                 }
             }
         }
@@ -82,14 +96,19 @@ where
     // attempt to refresh and run again
     'refresh: {
         let Some(expired_token) = expired_token else {
+            debug!("no cached token to refresh");
             break 'refresh;
         };
         let Some(refresh_token) = expired_token.token.refresh_token() else {
+            debug!("cached token does not have a refresh token");
             break 'refresh;
         };
         trace!("found refresh token. attempting to refresh");
         let refreshed_token = match refresh_credentials(refresh_token).await {
-            Ok(refreshed_token) => refreshed_token,
+            Ok(refreshed_token) => {
+                debug!("successfully refreshed token");
+                refreshed_token
+            }
             Err(e) => {
                 warn!("failed to refresh OAuth credentials: {}", e);
                 break 'refresh;
@@ -100,13 +119,18 @@ where
             Ok(result) => {
                 // the function worked with a refreshed token. cache this
                 // refreshed token
-                trace!("caching refreshed token to {}", cache_file.display());
+                debug!("caching refreshed token to {}", cache_file.display());
                 let writer = BufWriter::new(File::create(cache_file)?);
                 serde_json::to_writer(writer, &refreshed_token)?;
                 return Ok(result);
             }
-            Err(e) => {
-                debug!("error while performing operation with refreshed token: {}", e);
+            Err(TryWithCredentialsError::Unauthorized(e)) => {
+                debug!("refreshed token is invalid, as indicated by error: {}", e);
+            }
+            Err(TryWithCredentialsError::Other(e)) => {
+                // the problem was not with the credentials, so just return
+                // this error
+                return Err(e);
             }
         }
     }
@@ -121,20 +145,25 @@ where
             return Err(e);
         }
     };
-    match operation(&fresh_token.token).await {
+    let err = match operation(&fresh_token.token).await {
         Ok(result) => {
             // the function worked with a fresh token
-            trace!("caching fresh token to {}", cache_file.display());
+            debug!("caching fresh token to {}", cache_file.display());
             let writer = BufWriter::new(File::create(cache_file)?);
             serde_json::to_writer(writer, &fresh_token)?;
             return Ok(result);
         }
-        Err(e) => {
-            // the function did not work with a fresh token.
-            warn!("The OAuth credentials are invalid even after refreshing");
-            return Err(e);
+        Err(TryWithCredentialsError::Unauthorized(e)) => {
+            warn!("The OAuth credentials are invalid even after getting a fresh token: {}", e);
+            e
         }
-    }
+        Err(TryWithCredentialsError::Other(e)) => {
+            // the problem was not with the credentials, so just return
+            // this error
+            e
+        }
+    };
+    Err(err)
 }
 
 // Returns the token from the cache file, as well as if the token is known to
