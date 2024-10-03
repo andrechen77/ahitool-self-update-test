@@ -1,7 +1,7 @@
 use std::{collections::HashMap, io::Write};
 
 use chrono::Utc;
-use tracing::{info, warn};
+use clap::CommandFactory as _;
 
 use crate::{
     apis::{
@@ -14,7 +14,7 @@ use crate::{
         },
         job_nimbus,
     },
-    jobs::{Job, Status},
+    jobs::{Job, Status}, CliArgs,
 };
 
 #[derive(clap::Args, Debug)]
@@ -27,6 +27,11 @@ pub struct Args {
     /// stdout. This option is ignored with `--format google-sheets`.
     #[arg(short, long, default_value = None)]
     output: Option<String>,
+
+    /// Only valid with `--format google-sheets`. Whether to update an existing
+    /// Google Sheet; if not specified, creates a new Google Sheet.
+    #[arg(long)]
+    update: bool
 }
 
 #[derive(Debug, clap::ValueEnum, Clone, Copy, Eq, PartialEq)]
@@ -35,8 +40,8 @@ enum OutputFormat {
     Human,
     /// Prints a CSV file into the output file.
     Csv,
-    /// Creates a new Google Sheet on the user's Google Drive (requires OAuth
-    /// authorization), and outputs and opens a link to the new Google Sheet.
+    /// Outputs a Google Sheet on the user's Google Drive (requires OAuth
+    /// authorization).
     GoogleSheets,
 }
 
@@ -57,9 +62,12 @@ struct AccRecvableData<'a> {
 }
 
 pub fn main(api_key: &str, args: Args) -> anyhow::Result<()> {
-    let Args { output, format } = args;
+    let Args { output, format, update } = args;
     if format == OutputFormat::GoogleSheets && output.is_some() {
-        warn!("The `--output` option will be ignored due to `--format google-sheets`");
+        CliArgs::command().error(clap::error::ErrorKind::ArgumentConflict, "The `--output` option cannot be used with `--format google-sheets`").exit();
+    }
+    if format != OutputFormat::GoogleSheets && update {
+        CliArgs::command().error(clap::error::ErrorKind::ArgumentConflict, "The `--update` option can only be used with `--format google-sheets`").exit();
     }
 
     let jobs = job_nimbus::get_all_jobs_from_job_nimbus(&api_key, None)?;
@@ -89,7 +97,7 @@ pub fn main(api_key: &str, args: Args) -> anyhow::Result<()> {
         OutputFormat::Human => print_human(&results, output_writer)?,
         OutputFormat::Csv => print_csv(&results, output_writer)?,
         OutputFormat::GoogleSheets => {
-            create_google_sheet_and_print_link(&results)?;
+            generate_report_google_sheets(&results, update)?;
         }
     }
 
@@ -162,7 +170,7 @@ fn print_csv(results: &AccRecvableData, writer: impl Write) -> std::io::Result<(
     Ok(())
 }
 
-fn create_google_sheet_and_print_link(results: &AccRecvableData<'_>) -> anyhow::Result<()> {
+fn generate_report_google_sheets(results: &AccRecvableData<'_>, update: bool) -> anyhow::Result<()> {
     fn mk_row(cells: impl IntoIterator<Item = ExtendedValue>) -> RowData {
         RowData {
             values: cells
@@ -218,12 +226,17 @@ fn create_google_sheet_and_print_link(results: &AccRecvableData<'_>) -> anyhow::
             let token = token.clone();
             let spreadsheet = &spreadsheet;
             async move {
-                google_sheets::create_or_write_spreadsheet(
-                    &token,
-                    google_sheets::SheetNickname::AccReceivable,
-                    spreadsheet.clone(),
-                )
-                .await
+                let spreadsheet = spreadsheet.clone();
+                if update {
+                    google_sheets::create_or_write_spreadsheet(
+                        &token,
+                        google_sheets::SheetNickname::AccReceivable,
+                        spreadsheet,
+                    )
+                    .await
+                } else {
+                    google_sheets::create_spreadsheet(&token, google_sheets::SheetNickname::AccReceivable, spreadsheet).await
+                }
             }
         }),
     )?;

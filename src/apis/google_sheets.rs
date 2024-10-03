@@ -6,6 +6,7 @@ use std::collections::HashSet;
 use std::fs::File;
 
 use std::io::BufWriter;
+use std::path::Path;
 
 use anyhow::anyhow;
 use hyper::StatusCode;
@@ -23,7 +24,6 @@ use spreadsheet::Spreadsheet;
 use tracing::debug;
 use tracing::info;
 use std::collections::HashMap;
-use std::fs::OpenOptions;
 use std::io::BufReader;
 use tracing::trace;
 use tracing::warn;
@@ -53,14 +53,14 @@ pub async fn create_or_write_spreadsheet(
         Ok(update_spreadsheet(creds, &spreadsheet_id, spreadsheet).await?)
     } else {
         info!("No existing spreadsheet found, creating a new one");
-        Ok(create_sheet(creds, nickname, spreadsheet).await?)
+        Ok(create_spreadsheet(creds, nickname, spreadsheet).await?)
     }
 }
 
 /// Creates the specified spreadsheet in the user's Google Drive. Saves the
 /// created spreadsheet ID under the specified nickname in the known sheets file
 /// and return the URL of the created sheet.
-async fn create_sheet(
+pub async fn create_spreadsheet(
     creds: &Token,
     nickname: SheetNickname,
     spreadsheet: Spreadsheet,
@@ -292,21 +292,27 @@ async fn update_spreadsheet(
 type KnownSheets<'a> = HashMap<SheetNickname, Cow<'a, str>>;
 
 fn update_known_sheets_file(nickname: SheetNickname, spreadsheet_id: &str) -> std::io::Result<()> {
-    let file = OpenOptions::new().read(true).write(true).create(true).open(KNOWN_SHEETS_FILE)?;
-    let reader = BufReader::new(&file);
+    let path = Path::new(KNOWN_SHEETS_FILE);
 
     // deserialize the existing known sheets
-    let mut known_sheets: KnownSheets = match serde_json::from_reader(reader) {
-        Ok(sheets) => sheets,
-        // if the file is empty or invalid, start with an empty map
-        Err(_) => HashMap::new(),
+    let mut known_sheets: KnownSheets = if let Ok(file) = File::open(path) {
+        let reader = BufReader::new(file);
+        match serde_json::from_reader(reader) {
+            Ok(sheets) => sheets,
+            Err(e) => {
+                warn!("failed to deserialize known sheets file: {}", e);
+                HashMap::new()
+            }
+        }
+    } else {
+        HashMap::new()
     };
 
     // insert the new key-value pair
-    known_sheets.insert(nickname.into(), spreadsheet_id.into());
+    known_sheets.insert(nickname, spreadsheet_id.into());
 
     // Serialize the updated known sheets back to the file
-    let writer = BufWriter::new(&file);
+    let writer = BufWriter::new(File::create(path)?);
     serde_json::to_writer(writer, &known_sheets)?;
 
     Ok(())

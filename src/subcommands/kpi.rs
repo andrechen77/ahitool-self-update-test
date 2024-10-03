@@ -3,6 +3,7 @@ use std::fmt::Display;
 use std::path::Path;
 
 use crate::apis::job_nimbus;
+use crate::CliArgs;
 use anyhow::Context;
 use anyhow::Result;
 use chrono::Datelike as _;
@@ -11,7 +12,7 @@ use chrono::NaiveDateTime;
 use chrono::NaiveTime;
 use chrono::TimeZone as _;
 use chrono::Utc;
-use tracing::warn;
+use clap::CommandFactory as _;
 
 #[derive(clap::Args, Debug)]
 pub struct Args {
@@ -45,6 +46,11 @@ pub struct Args {
     /// `--format google-sheets`.
     #[arg(short, long, default_value = None)]
     output: Option<String>,
+
+    /// Only valid with `--format google-sheets`. Whether to update an existing
+    /// Google Sheet; if not specified, creates a new Google Sheet.
+    #[arg(long)]
+    update: bool
 }
 
 #[derive(Debug, clap::ValueEnum, Clone, Copy, Eq, PartialEq)]
@@ -56,15 +62,18 @@ enum OutputFormat {
     /// corresponds to a sales rep's stats, and there is also a CSV file for
     /// red flags.
     Csv,
-    /// Creates a new Google Sheet on the user's Google Drive (requires OAuth
-    /// authorization), and outputs and opens a link to the new Google Sheet.
+    /// Outputs a Google Sheet on the user's Google Drive (requires OAuth
+    /// authorization).
     GoogleSheets,
 }
 
 pub fn main(api_key: &str, args: Args) -> Result<()> {
-    let Args { filter_filename, from_date, to_date, format, output } = args;
+    let Args { filter_filename, from_date, to_date, format, output, update } = args;
     if format == OutputFormat::GoogleSheets && output.is_some() {
-        warn!("The `--output` option will be ignored due to `--format google-sheets`");
+        CliArgs::command().error(clap::error::ErrorKind::ArgumentConflict, "The `--output` option cannot be used with `--format google-sheets`").exit();
+    }
+    if format != OutputFormat::GoogleSheets && update {
+        CliArgs::command().error(clap::error::ErrorKind::ArgumentConflict, "The `--update` option can only be used with `--format google-sheets`").exit();
     }
 
     let filter = if let Some(filter_filename) = filter_filename {
@@ -113,7 +122,7 @@ pub fn main(api_key: &str, args: Args) -> Result<()> {
         OutputFormat::Human => output::print_report_human(&tracker_stats, &red_flags, output)?,
         OutputFormat::Csv => output::print_report_csv(&tracker_stats, &red_flags, output)?,
         OutputFormat::GoogleSheets => {
-            output::generate_report_google_sheets(&tracker_stats, &red_flags)?
+            output::generate_report_google_sheets(&tracker_stats, &red_flags, update)?
         }
     }
 
@@ -349,7 +358,6 @@ mod output {
     };
 
     use chrono::Utc;
-    use tracing::info;
 
     use crate::{
         apis::google_sheets::{
@@ -522,6 +530,7 @@ mod output {
         red_flags: impl IntoIterator<
             Item = (&'a KpiSubject, &'a Vec<(Rc<AnalyzedJob>, JobAnalysisError)>),
         >,
+        update: bool,
     ) -> anyhow::Result<()> {
         fn mk_row(cells: impl IntoIterator<Item = ExtendedValue>) -> RowData {
             RowData {
@@ -624,12 +633,17 @@ mod output {
                     let token = token.clone();
                     let spreadsheet = &spreadsheet;
                     async move {
-                        google_sheets::create_or_write_spreadsheet(
-                            &token,
-                            google_sheets::SheetNickname::Kpi,
-                            spreadsheet.clone(),
-                        )
-                        .await
+                        let spreadsheet = spreadsheet.clone();
+                        if update {
+                            google_sheets::create_or_write_spreadsheet(
+                                &token,
+                                google_sheets::SheetNickname::Kpi,
+                                spreadsheet,
+                            )
+                            .await
+                        } else {
+                            google_sheets::create_spreadsheet(&token, google_sheets::SheetNickname::Kpi, spreadsheet).await
+                        }
                     }
                 }),
             )?;
