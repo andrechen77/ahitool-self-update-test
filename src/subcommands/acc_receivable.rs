@@ -14,7 +14,8 @@ use crate::{
         },
         job_nimbus,
     },
-    jobs::{Job, Status}, CliArgs,
+    jobs::{Job, Status},
+    utils, CliArgs,
 };
 
 #[derive(clap::Args, Debug)]
@@ -31,7 +32,7 @@ pub struct Args {
     /// Only valid with `--format google-sheets`. Whether to update an existing
     /// Google Sheet; if not specified, creates a new Google Sheet.
     #[arg(long)]
-    update: bool
+    update: bool,
 }
 
 #[derive(Debug, clap::ValueEnum, Clone, Copy, Eq, PartialEq)]
@@ -64,10 +65,20 @@ struct AccRecvableData<'a> {
 pub fn main(api_key: &str, args: Args) -> anyhow::Result<()> {
     let Args { output, format, update } = args;
     if format == OutputFormat::GoogleSheets && output.is_some() {
-        CliArgs::command().error(clap::error::ErrorKind::ArgumentConflict, "The `--output` option cannot be used with `--format google-sheets`").exit();
+        CliArgs::command()
+            .error(
+                clap::error::ErrorKind::ArgumentConflict,
+                "The `--output` option cannot be used with `--format google-sheets`",
+            )
+            .exit();
     }
     if format != OutputFormat::GoogleSheets && update {
-        CliArgs::command().error(clap::error::ErrorKind::ArgumentConflict, "The `--update` option can only be used with `--format google-sheets`").exit();
+        CliArgs::command()
+            .error(
+                clap::error::ErrorKind::ArgumentConflict,
+                "The `--update` option can only be used with `--format google-sheets`",
+            )
+            .exit();
     }
 
     let jobs = job_nimbus::get_all_jobs_from_job_nimbus(&api_key, None)?;
@@ -170,7 +181,10 @@ fn print_csv(results: &AccRecvableData, writer: impl Write) -> std::io::Result<(
     Ok(())
 }
 
-fn generate_report_google_sheets(results: &AccRecvableData<'_>, update: bool) -> anyhow::Result<()> {
+fn generate_report_google_sheets(
+    results: &AccRecvableData<'_>,
+    update: bool,
+) -> anyhow::Result<()> {
     fn mk_row(cells: impl IntoIterator<Item = ExtendedValue>) -> RowData {
         RowData {
             values: cells
@@ -219,7 +233,7 @@ fn generate_report_google_sheets(results: &AccRecvableData<'_>, update: bool) ->
         ..Default::default()
     };
 
-    let _url = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap().block_on(
+    let url = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap().block_on(
         google_sheets::run_with_credentials(|token| {
             // FIXME cloning the token is a workaround because I can't
             // get lifetimes to work correctly in run_with_credentials
@@ -235,10 +249,16 @@ fn generate_report_google_sheets(results: &AccRecvableData<'_>, update: bool) ->
                     )
                     .await
                 } else {
-                    google_sheets::create_spreadsheet(&token, google_sheets::SheetNickname::AccReceivable, spreadsheet).await
+                    google_sheets::create_spreadsheet(
+                        &token,
+                        google_sheets::SheetNickname::AccReceivable,
+                        spreadsheet,
+                    )
+                    .await
                 }
             }
         }),
     )?;
+    utils::open_url(url.as_str());
     Ok(())
 }

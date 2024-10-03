@@ -5,6 +5,7 @@ mod apis;
 mod job_tracker;
 mod jobs;
 mod subcommands;
+mod utils;
 
 #[derive(Parser, Debug)]
 struct CliArgs {

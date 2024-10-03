@@ -23,7 +23,9 @@ use std::fs::File;
 use std::io::{BufReader, BufWriter};
 use thiserror::Error;
 use tokio::{net::TcpListener, sync::oneshot};
-use tracing::{debug, info, trace, warn};
+use tracing::{debug, trace, warn};
+
+use crate::utils;
 
 pub type Token = BasicTokenResponse;
 
@@ -251,7 +253,7 @@ async fn get_fresh_credentials() -> anyhow::Result<TokenWithExpiration> {
 
     let (tx, rx) = oneshot::channel();
     tokio::spawn(listen_for_code(tcp_listener, tx, csrf_token));
-    info!("Browse to the following URL to authorize the app: {}", auth_url);
+    utils::open_url(auth_url.as_str());
     let code = rx.await?;
 
     let token = client

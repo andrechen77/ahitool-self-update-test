@@ -50,7 +50,7 @@ pub struct Args {
     /// Only valid with `--format google-sheets`. Whether to update an existing
     /// Google Sheet; if not specified, creates a new Google Sheet.
     #[arg(long)]
-    update: bool
+    update: bool,
 }
 
 #[derive(Debug, clap::ValueEnum, Clone, Copy, Eq, PartialEq)]
@@ -70,10 +70,20 @@ enum OutputFormat {
 pub fn main(api_key: &str, args: Args) -> Result<()> {
     let Args { filter_filename, from_date, to_date, format, output, update } = args;
     if format == OutputFormat::GoogleSheets && output.is_some() {
-        CliArgs::command().error(clap::error::ErrorKind::ArgumentConflict, "The `--output` option cannot be used with `--format google-sheets`").exit();
+        CliArgs::command()
+            .error(
+                clap::error::ErrorKind::ArgumentConflict,
+                "The `--output` option cannot be used with `--format google-sheets`",
+            )
+            .exit();
     }
     if format != OutputFormat::GoogleSheets && update {
-        CliArgs::command().error(clap::error::ErrorKind::ArgumentConflict, "The `--update` option can only be used with `--format google-sheets`").exit();
+        CliArgs::command()
+            .error(
+                clap::error::ErrorKind::ArgumentConflict,
+                "The `--update` option can only be used with `--format google-sheets`",
+            )
+            .exit();
     }
 
     let filter = if let Some(filter_filename) = filter_filename {
@@ -368,6 +378,7 @@ mod output {
             },
         },
         jobs::{AnalyzedJob, JobAnalysisError, TimeDelta},
+        utils,
     };
 
     use super::{processing::JobTrackerStats, KpiSubject};
@@ -625,7 +636,7 @@ mod output {
             ..Default::default()
         };
 
-        let _url =
+        let url =
             tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap().block_on(
                 google_sheets::run_with_credentials(|token| {
                     // FIXME cloning the token is a workaround because I can't
@@ -642,11 +653,17 @@ mod output {
                             )
                             .await
                         } else {
-                            google_sheets::create_spreadsheet(&token, google_sheets::SheetNickname::Kpi, spreadsheet).await
+                            google_sheets::create_spreadsheet(
+                                &token,
+                                google_sheets::SheetNickname::Kpi,
+                                spreadsheet,
+                            )
+                            .await
                         }
                     }
                 }),
             )?;
+        utils::open_url(url.as_str());
         Ok(())
     }
 

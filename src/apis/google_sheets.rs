@@ -21,10 +21,10 @@ use spreadsheet::update::Request;
 use spreadsheet::GridCoordinate;
 use spreadsheet::SheetProperties;
 use spreadsheet::Spreadsheet;
-use tracing::debug;
-use tracing::info;
 use std::collections::HashMap;
 use std::io::BufReader;
+use tracing::debug;
+use tracing::info;
 use tracing::trace;
 use tracing::warn;
 
@@ -128,9 +128,7 @@ async fn update_spreadsheet(
             .bearer_auth(creds.access_token().secret())
             .build()
             .map_err(anyhow::Error::from)?;
-        let response = client.execute(request)
-            .await
-            .map_err(anyhow::Error::from)?;
+        let response = client.execute(request).await.map_err(anyhow::Error::from)?;
 
         if !response.status().is_success() {
             if response.status() == StatusCode::UNAUTHORIZED {
@@ -248,9 +246,7 @@ async fn update_spreadsheet(
         .json(&request_body)
         .build()
         .map_err(anyhow::Error::from)?;
-    let response = client.execute(request)
-        .await
-        .map_err(anyhow::Error::from)?;
+    let response = client.execute(request).await.map_err(anyhow::Error::from)?;
     if !response.status().is_success() {
         if response.status() == StatusCode::UNAUTHORIZED {
             return Err(TryWithCredentialsError::Unauthorized(anyhow!(
@@ -281,7 +277,10 @@ async fn update_spreadsheet(
             }
         }
         warn!("No URL returned in response to updating sheet. Inferring URL from spreadsheet ID and a hardcoded pattern");
-        format!("https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit", spreadsheet_id = spreadsheet_id)
+        format!(
+            "https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit",
+            spreadsheet_id = spreadsheet_id
+        )
     };
     info!("Updated Google Sheet at {}", url);
     Ok(url)
