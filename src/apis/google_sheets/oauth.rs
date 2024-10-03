@@ -218,10 +218,11 @@ fn get_cached_token(cache_file: &Path) -> Option<(TokenWithExpiration, bool)> {
 
 async fn refresh_credentials(refresh_token: &RefreshToken) -> anyhow::Result<TokenWithExpiration> {
     let time_obtained = Utc::now();
-    let token = oauth2_client()
+    let mut token = oauth2_client()
         .exchange_refresh_token(refresh_token)
         .request_async(async_http_client)
         .await?;
+    token.set_refresh_token(Some(refresh_token.clone()));
     Ok(TokenWithExpiration { token, time_obtained })
 }
 
