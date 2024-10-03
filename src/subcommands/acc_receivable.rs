@@ -162,7 +162,7 @@ fn print_csv(results: &AccRecvableData, writer: impl Write) -> std::io::Result<(
     Ok(())
 }
 
-fn create_google_sheet_and_print_link(results: &AccRecvableData) -> anyhow::Result<()> {
+fn create_google_sheet_and_print_link(results: &AccRecvableData<'_>) -> anyhow::Result<()> {
     fn mk_row(cells: impl IntoIterator<Item = ExtendedValue>) -> RowData {
         RowData {
             values: cells
@@ -211,8 +211,15 @@ fn create_google_sheet_and_print_link(results: &AccRecvableData) -> anyhow::Resu
         ..Default::default()
     };
 
-    let creds = google_sheets::get_credentials()?;
-    let url = google_sheets::create_sheet(&creds, &spreadsheet)?;
+    let url = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap().block_on(
+        google_sheets::run_with_credentials(|token| {
+            // FIXME cloning the token is a workaround because I can't
+            // get lifetimes to work correctly in run_with_credentials
+            let token = token.clone();
+            let spreadsheet = &spreadsheet;
+            async move { google_sheets::create_sheet(&token, &spreadsheet).await }
+        }),
+    )?;
     info!("Created new Google Sheet at {}", url);
     Ok(())
 }

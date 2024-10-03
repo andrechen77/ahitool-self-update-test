@@ -1,29 +1,32 @@
 use std::convert::Infallible;
+use std::future::Future;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Mutex;
 
+use chrono::{DateTime, Utc};
 use http_body_util::Full;
 use hyper::body::Bytes;
 use hyper::service::service_fn;
 use hyper::StatusCode;
 use hyper::{body::Incoming as IncomingBody, server::conn::http1, Request, Response};
 use hyper_util::rt::TokioIo;
-use oauth2::basic::BasicTokenType;
+use oauth2::basic::BasicTokenResponse;
 use oauth2::reqwest::async_http_client;
 use oauth2::{
     basic::BasicClient, AuthUrl, ClientId, ClientSecret, CsrfToken, PkceCodeChallenge, Scope,
     TokenUrl,
 };
-use oauth2::{AuthorizationCode, EmptyExtraTokenFields, RedirectUrl, StandardTokenResponse};
+use oauth2::{AuthorizationCode, RedirectUrl, RefreshToken, TokenResponse};
+use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
 use tokio::{net::TcpListener, sync::oneshot};
-use tracing::{debug, info, warn};
+use tracing::{debug, info, trace, warn};
 
-pub type Token = StandardTokenResponse<EmptyExtraTokenFields, BasicTokenType>;
+pub type Token = BasicTokenResponse;
 
-pub const DEFAULT_CACHE_FILE: &str = "google_oauth_token.json";
+const DEFAULT_CACHE_FILE: &str = "google_oauth_token.json";
 const CLIENT_ID: &str = "859579651850-t212eiscr880fnifmsi6ddft2bhdtplt.apps.googleusercontent.com";
 // It should be fine that the secret is not actually kept secret. see
 // https://developers.google.com/identity/protocols/oauth2
@@ -32,40 +35,183 @@ const AUTH_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 const SCOPE_DRIVE_FILE: &str = "https://www.googleapis.com/auth/drive.file";
 
-pub fn get_credentials_with_cache(cache_file: &Path) -> anyhow::Result<Token> {
-    if cache_file.exists() {
-        let reader = BufReader::new(File::open(cache_file)?);
-        let cached_token: Token = serde_json::from_reader(reader)?;
-        // TODO check if token is valid
-        Ok(cached_token)
-    } else {
-        let fresh_token = tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .unwrap()
-            .block_on(get_fresh_credentials())?;
-        let writer = BufWriter::new(File::create(cache_file)?);
-        serde_json::to_writer(writer, &fresh_token)?;
-        Ok(fresh_token)
+#[derive(Debug, Serialize, Deserialize)]
+struct TokenWithExpiration {
+    token: Token,
+    time_obtained: DateTime<Utc>,
+}
+
+/// Runs a function that requires OAuth credentials. If the provided function
+/// returns an error, this is interpreted as the credentials being invalid.
+pub async fn run_with_credentials<F, O, U>(mut operation: O) -> anyhow::Result<U>
+where
+    O: FnMut(&Token) -> F, // TODO find a way to make this work with &Token without lifetimes screaming at you
+    F: Future<Output = anyhow::Result<U>>,
+{
+    let cache_file = Path::new(DEFAULT_CACHE_FILE);
+
+    // attempt to run the function with a cached token
+    let expired_token = match get_cached_token(cache_file) {
+        Some((cached_token, false)) => {
+            // attempt to run the function with the cached token
+            trace!("using cached token to perform operation");
+            match operation(&cached_token.token).await {
+                Ok(result) => {
+                    // the function worked the first time. since we did not
+                    // refresh anything, we do not need to cache the token again
+                    return Ok(result);
+                }
+                Err(e) => {
+                    debug!("error while performing operation with cached token: {}", e);
+                    // even though `get_cached_token` returned `false`, the
+                    // token might still be expired (either expired in between
+                    // when we last checked till now, or it didn't have an
+                    // indicated expiration date
+                    Some(cached_token)
+                }
+            }
+        }
+        Some((cached_token, true)) => {
+            // the token is known to be expired
+            debug!("cached token is expired");
+            Some(cached_token)
+        }
+        None => None,
+    };
+
+    // attempt to refresh and run again
+    'refresh: {
+        let Some(expired_token) = expired_token else {
+            break 'refresh;
+        };
+        let Some(refresh_token) = expired_token.token.refresh_token() else {
+            break 'refresh;
+        };
+        trace!("found refresh token. attempting to refresh");
+        let refreshed_token = match refresh_credentials(refresh_token).await {
+            Ok(refreshed_token) => refreshed_token,
+            Err(e) => {
+                warn!("failed to refresh OAuth credentials: {}", e);
+                break 'refresh;
+            }
+        };
+        trace!("performing operation with refreshed token");
+        match operation(&refreshed_token.token).await {
+            Ok(result) => {
+                // the function worked with a refreshed token. cache this
+                // refreshed token
+                trace!("caching refreshed token to {}", cache_file.display());
+                let writer = BufWriter::new(File::create(cache_file)?);
+                serde_json::to_writer(writer, &refreshed_token)?;
+                return Ok(result);
+            }
+            Err(e) => {
+                debug!("error while performing operation with refreshed token: {}", e);
+            }
+        }
+    }
+
+    // getting to this point means the refreshed token did not work. attempt
+    // to get totally fresh credentials and run again
+    trace!("attempting to get totally fresh credentials");
+    let fresh_token = match get_fresh_credentials().await {
+        Ok(fresh_token) => fresh_token,
+        Err(e) => {
+            warn!("failed to get fresh OAuth credentials: {}", e);
+            return Err(e);
+        }
+    };
+    match operation(&fresh_token.token).await {
+        Ok(result) => {
+            // the function worked with a fresh token
+            trace!("caching fresh token to {}", cache_file.display());
+            let writer = BufWriter::new(File::create(cache_file)?);
+            serde_json::to_writer(writer, &fresh_token)?;
+            return Ok(result);
+        }
+        Err(e) => {
+            // the function did not work with a fresh token.
+            warn!("The OAuth credentials are invalid even after refreshing");
+            return Err(e);
+        }
     }
 }
 
-async fn get_fresh_credentials() -> anyhow::Result<Token> {
+// Returns the token from the cache file, as well as if the token is known to
+// be expired.
+fn get_cached_token(cache_file: &Path) -> Option<(TokenWithExpiration, bool)> {
+    match cache_file.try_exists() {
+        Ok(false) => {
+            debug!("cache file does not exist");
+            return None;
+        }
+        Err(e) => {
+            warn!("Unable to check if the cache file exists: {}", e);
+            return None;
+        }
+        Ok(true) => {
+            trace!("found cache file");
+        }
+    }
+
+    // at this point we know the file must exist
+    let file = match File::open(cache_file) {
+        Ok(file) => file,
+        Err(e) => {
+            warn!("failed to open cache file: {}", e);
+            // if we can't open the file even though `try_exists` returned
+            // `Ok(true)`, it's probably because the file was deleted between
+            // when we checked and when we we tried to open it, so we should
+            // still attempt to cache the token
+            return None;
+        }
+    };
+
+    let cached_token: serde_json::Result<TokenWithExpiration> =
+        serde_json::from_reader(BufReader::new(file));
+    match cached_token {
+        Ok(cached_token) => {
+            debug!("successfully deserialized cached token");
+            if let Some(duration) = cached_token.token.expires_in() {
+                let is_expired = cached_token.time_obtained + duration <= Utc::now();
+                Some((cached_token, is_expired))
+            } else {
+                debug!("the token did not have an expiration time; assuming it is valid");
+                Some((cached_token, false))
+            }
+        }
+        Err(e) => {
+            warn!("failed to deserialize cached token: {}", e);
+            None
+        }
+    }
+}
+
+async fn refresh_credentials(refresh_token: &RefreshToken) -> anyhow::Result<TokenWithExpiration> {
+    let time_obtained = Utc::now();
+    let token = oauth2_client()
+        .exchange_refresh_token(refresh_token)
+        .request_async(async_http_client)
+        .await?;
+    Ok(TokenWithExpiration { token, time_obtained })
+}
+
+async fn get_fresh_credentials() -> anyhow::Result<TokenWithExpiration> {
+    // get the current time so we can calculate the expiration date
+    let time_obtained = Utc::now();
+
     // establish a server to listen for the authorization code
     let addr: SocketAddr = ([127, 0, 0, 1], 0).into(); // request any port
     let tcp_listener = TcpListener::bind(addr).await?;
 
     // create OAuth2 client
-    let client = BasicClient::new(
-        ClientId::new(CLIENT_ID.to_owned()),
-        Some(ClientSecret::new(CLIENT_SECRET.to_owned())),
-        AuthUrl::new(AUTH_URL.to_owned())?,
-        Some(TokenUrl::new(TOKEN_URL.to_owned())?),
-    )
-    .set_redirect_uri(RedirectUrl::new(format!(
-        "http://localhost:{}",
-        tcp_listener.local_addr().expect("should exist").port()
-    ))?);
+    let client = oauth2_client().set_redirect_uri(
+        RedirectUrl::new(format!(
+            "http://localhost:{}",
+            tcp_listener.local_addr().expect("should exist").port(),
+        ))
+        .expect("hardcoded URL should be valid"),
+    );
     let (pkce_challenge, pkce_verifier) = PkceCodeChallenge::new_random_sha256();
     let (auth_url, csrf_token) = client
         .authorize_url(CsrfToken::new_random)
@@ -78,13 +224,13 @@ async fn get_fresh_credentials() -> anyhow::Result<Token> {
     info!("Browse to the following URL to authorize the app: {}", auth_url);
     let code = rx.await?;
 
-    let token_result = client
+    let token = client
         .exchange_code(AuthorizationCode::new(code))
         .set_pkce_verifier(pkce_verifier)
         .request_async(async_http_client)
         .await?;
 
-    Ok(token_result)
+    Ok(TokenWithExpiration { token, time_obtained })
 }
 
 async fn listen_for_code(
@@ -97,7 +243,7 @@ async fn listen_for_code(
 
     let response_tx = Mutex::new(Some(response_tx));
     let handle_request = |req: Request<IncomingBody>| {
-        debug!("Received request: {:?}", req);
+        trace!("Received request: {:?}", req);
         let csrf_token = &csrf_token;
         let response_tx = &response_tx;
         async move {
@@ -161,4 +307,13 @@ async fn listen_for_code(
     http1::Builder::new().serve_connection(tcp_stream, service_fn(handle_request)).await?;
 
     Ok(())
+}
+
+fn oauth2_client() -> BasicClient {
+    BasicClient::new(
+        ClientId::new(CLIENT_ID.to_owned()),
+        Some(ClientSecret::new(CLIENT_SECRET.to_owned())),
+        AuthUrl::new(AUTH_URL.to_owned()).expect("hardcoded URL should be valid"),
+        Some(TokenUrl::new(TOKEN_URL.to_owned()).expect("hardcoded URL should be valid")),
+    )
 }
