@@ -1,1 +1,6 @@
 /target
+/ignore
+/.vscode
+google_oauth_token.json
+google_sheets.json
+job_nimbus_api_key.txt
