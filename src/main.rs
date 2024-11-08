@@ -33,6 +33,9 @@ fn main() -> anyhow::Result<()> {
         Subcommand::Ar(acc_recv_args) => {
             subcommands::acc_receivable::main(&jn_api_key, acc_recv_args)?;
         }
+        Subcommand::Update(update_args) => {
+            subcommands::update::main(update_args)?;
+        }
     }
 
     Ok(())
