@@ -36,6 +36,9 @@ fn main() -> anyhow::Result<()> {
         Subcommand::Update(update_args) => {
             subcommands::update::main(update_args)?;
         }
+        Subcommand::SaySomething => {
+            println!("'twas I who ate the cookies");
+        }
     }
 
     Ok(())

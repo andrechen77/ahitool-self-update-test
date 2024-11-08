@@ -10,4 +10,5 @@ pub enum Subcommand {
     Kpi(kpi::Args),
     /// Generate a report for all accounts receivable.
     Ar(acc_receivable::Args),
+    SaySomething,
 }
